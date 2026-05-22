@@ -49,6 +49,17 @@ def test_call_codex_raises_on_nonzero_exit() -> None:
     assert "auth required" in str(exc.value)
 
 
+def test_call_codex_wraps_missing_binary() -> None:
+    def _missing_runner(cmd, **kwargs):
+        raise FileNotFoundError(cmd[0])
+
+    with pytest.raises(CodexCallError) as exc:
+        call_codex("x", runner=_missing_runner)
+    msg = str(exc.value)
+    assert "could not execute" in msg
+    assert "codex login" in msg
+
+
 def test_call_codex_handles_no_assistant_message() -> None:
     runner = _fake_runner_yielding([
         {"type": "thinking", "content": "..."},

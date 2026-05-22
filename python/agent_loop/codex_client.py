@@ -76,7 +76,17 @@ def call_codex(
         cmd.extend(extra_args)
     cmd.append(prompt)
 
-    result = run(cmd, timeout=timeout) if timeout else run(cmd)
+    try:
+        result = run(cmd, timeout=timeout) if timeout else run(cmd)
+    except FileNotFoundError as exc:
+        binary = cmd[0] if cmd else "codex"
+        raise CodexCallError(
+            f"could not execute {binary!r}; install Codex CLI and run `codex login`, "
+            "or set AGENT_LOOP_CODEX_BIN to the full command"
+        ) from exc
+    except OSError as exc:
+        binary = cmd[0] if cmd else "codex"
+        raise CodexCallError(f"could not execute {binary!r}: {exc}") from exc
     exit_code = getattr(result, "returncode", 0)
     stdout = getattr(result, "stdout", "") or ""
     stderr = getattr(result, "stderr", "") or ""

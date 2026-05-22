@@ -30,6 +30,8 @@ The local marketplace clone is cached. When upstream changes, refresh it with:
 
 ```
 /plugin marketplace update claudexcodex
+/plugin install agent-loop@claudexcodex
+/reload-plugins
 ```
 
 If `update` is unavailable or doesn't take effect, remove and re-add:
