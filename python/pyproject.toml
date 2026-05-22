@@ -8,9 +8,7 @@ version = "0.1.0"
 description = "Codex-driven Claude review loop controller"
 readme = "README.md"
 requires-python = ">=3.11"
-dependencies = [
-  "claude-agent-sdk>=0.1.0",
-]
+dependencies = []
 
 [project.optional-dependencies]
 dev = [

@@ -19,7 +19,6 @@ def test_help(tmp_path: Path) -> None:
     r = _run(["--help"], cwd=tmp_path)
     assert r.returncode == 0
     assert "init-run" in r.stdout
-    assert "dispatch" in r.stdout
     assert "scout" in r.stdout
     assert "finalize" in r.stdout
 
