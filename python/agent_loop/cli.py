@@ -38,6 +38,23 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--run", required=True)
     p.add_argument("--round", type=int, required=True)
 
+    # record-diff
+    p = sub.add_parser("record-diff", help="worker hook: capture diff for a round")
+    _add_common(p)
+    p.add_argument("--run", required=True)
+    p.add_argument("--round", type=int, required=True)
+    p.add_argument("--baseline", required=True)
+
+    # capture-baseline
+    p = sub.add_parser("capture-baseline", help="emit current HEAD sha for the worker to use later")
+    _add_common(p)
+
+    # mark-worker-done
+    p = sub.add_parser("mark-worker-done", help="worker hook: flip phase to claude_completed")
+    _add_common(p)
+    p.add_argument("--run", required=True)
+    p.add_argument("--round", type=int, required=True)
+
     # init-round
     p = sub.add_parser("init-round", help="render prompt + create round dir")
     _add_common(p)
@@ -401,6 +418,38 @@ Decision rules:
         "round": args.round,
         "safety_flags": safety_flags,
     })
+    return 0
+
+
+@register("record-diff")
+def _cmd_record_diff(args) -> int:
+    from agent_loop.diff_capture import capture_diff
+    repo = _Path(args.repo).resolve()
+    rd = _run_dir(repo, args.run) / "rounds" / f"{args.round:02d}"
+    rd.mkdir(parents=True, exist_ok=True)
+    diff = capture_diff(repo, args.baseline)
+    (rd / "diff.patch").write_text(diff, encoding="utf-8")
+    _emit({"diff_path": str(rd / "diff.patch"), "size_bytes": len(diff)})
+    return 0
+
+
+@register("capture-baseline")
+def _cmd_capture_baseline(args) -> int:
+    from agent_loop.diff_capture import capture_baseline
+    repo = _Path(args.repo).resolve()
+    sha = capture_baseline(repo)
+    _emit({"baseline": sha})
+    return 0
+
+
+@register("mark-worker-done")
+def _cmd_mark_worker_done(args) -> int:
+    repo = _Path(args.repo).resolve()
+    run_dir = _run_dir(repo, args.run)
+    rs = RunState.load(run_dir / "state.json")
+    rs.set_round_phase(args.round, "claude_completed")
+    rs.save(run_dir / "state.json")
+    _emit({"round": args.round, "phase": "claude_completed"})
     return 0
 
 
