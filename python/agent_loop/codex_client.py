@@ -18,8 +18,11 @@ from __future__ import annotations
 import json
 import os
 import shlex
+import shutil
 import subprocess
+import sys
 from dataclasses import dataclass, field
+from pathlib import Path
 from typing import Any, Callable, Optional
 
 
@@ -45,7 +48,17 @@ def _default_runner(cmd: list[str], **kwargs):
 def _resolve_codex_bin() -> list[str]:
     override = os.environ.get("AGENT_LOOP_CODEX_BIN")
     if override:
-        return shlex.split(override)
+        parts = shlex.split(override, posix=sys.platform != "win32")
+        return [p.strip("\"'") for p in parts]
+    resolved = shutil.which("codex.cmd" if sys.platform == "win32" else "codex")
+    if resolved:
+        return [resolved]
+    if sys.platform == "win32":
+        appdata = os.environ.get("APPDATA")
+        if appdata:
+            npm_codex = Path(appdata) / "npm" / "codex.cmd"
+            if npm_codex.exists():
+                return [str(npm_codex)]
     return ["codex"]
 
 

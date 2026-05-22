@@ -10,6 +10,7 @@ from agent_loop.codex_client import (
     CodexCallError,
     CodexResult,
     call_codex,
+    _resolve_codex_bin,
 )
 
 
@@ -58,6 +59,11 @@ def test_call_codex_wraps_missing_binary() -> None:
     msg = str(exc.value)
     assert "could not execute" in msg
     assert "codex login" in msg
+
+
+def test_resolve_codex_bin_prefers_override(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("AGENT_LOOP_CODEX_BIN", r"C:\Tools\codex.cmd --profile test")
+    assert _resolve_codex_bin() == [r"C:\Tools\codex.cmd", "--profile", "test"]
 
 
 def test_call_codex_handles_no_assistant_message() -> None:
