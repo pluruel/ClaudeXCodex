@@ -1,71 +1,61 @@
-# agent-loop — Codex plugin for Claude review loops
+# agent-loop — Claude Code plugin for review loops with Codex
 
-A Codex CLI plugin where Codex orchestrates Claude Code (via the Claude Agent SDK) as a worker through bounded review rounds. Codex generates each Claude prompt with a curated Reading List, reviews each round, and writes audit-grade artifacts to `.agent-loop/runs/<id>/`.
+A Claude Code plugin where the interactive Claude session is the supervisor, dispatching worker subagents via the Task tool and using Codex CLI (headless `codex exec --json`) for planning and review. All artifacts go to `.agent-loop/runs/<id>/`.
 
-See `docs/superpowers/specs/2026-05-22-agent-loop-codex-plugin-design.md` for the full spec.
+See `docs/superpowers/plans/2026-05-22-claude-entry-pivot.md` for the architecture pivot details. The original spec (`docs/superpowers/specs/2026-05-22-agent-loop-codex-plugin-design.md`) is superseded.
 
 ## Repo layout
 
-- `.codex-plugin/plugin.json` — Codex plugin manifest
-- `skills/` — Codex plugin skills (`agent-loop/`, `references/`)
+- `.claude-plugin/plugin.json` — Claude Code plugin manifest
+- `skills/` — plugin skills (`agent-loop/`, `references/`)
 - `config/` — packaged plugin defaults (e.g. `defaults.toml`)
-- `python/` — Python core (`agent-loop` CLI, Claude SDK runner, state, safety)
-- `docs/superpowers/` — spec and implementation plan
+- `python/` — Python core (`agent-loop` CLI, codex subprocess wrapper, state, safety)
+- `docs/superpowers/` — spec and implementation plans
 
 ## Install
 
-### Codex plugin (skills)
+### Claude Code plugin (skills)
 
 ```bash
-codex plugin marketplace add pluruel/ClaudeXCodex
+claude plugin marketplace add pluruel/ClaudeXCodex
 ```
 
-### Python core (CLI tool, required for the plugin to do real work)
+### Python core (CLI tool, required)
 
 ```bash
 git clone https://github.com/pluruel/ClaudeXCodex.git
 cd ClaudeXCodex/python
 python -m venv .venv
 .venv/bin/pip install -e ".[dev]"
-# Add to PATH:
 export PATH="$PWD/.venv/bin:$PATH"
 ```
 
-### Authentication
+### Authentication (both subscription-based; no API keys needed)
 
-Pick **one** for Claude (the worker):
-
-**Option A — Claude Code subscription (Pro / Max, recommended if you have it)**
 ```bash
-claude login                      # one-time, stores OAuth in ~/.claude/
-unset ANTHROPIC_API_KEY           # make sure no API key takes precedence
-```
-The Claude Agent SDK auto-detects the local Claude Code credentials.
-
-**Option B — Anthropic API key (pay-as-you-go)**
-```bash
-export ANTHROPIC_API_KEY=sk-ant-...
+claude login        # if you haven't already
+codex login         # subscription headless requires this
 ```
 
-Codex CLI itself is separate:
-```bash
-export OPENAI_API_KEY=sk-...      # required for Codex
-```
+Do NOT set `ANTHROPIC_API_KEY` or `OPENAI_API_KEY` if you want subscription auth.
 
 ## Quick usage
 
-In Codex CLI inside your target repo:
+In your target repo:
 
 ```
-/agent-loop start "<your goal>"
+$ claude
+> /agent-loop start "<your goal>"
 ```
 
-To resume after an interruption:
+The supervisor (this Claude session) will then call `codex exec` for planning/review and dispatch worker subagents (Task tool) for implementation. All artifacts in `.agent-loop/runs/<id>/`.
+
+Resume after interruption:
 
 ```
-/agent-loop continue
+> /agent-loop continue
 ```
 
 ## Status
 
-v1 — local CLI + plugin skills. See spec sections 10 & 11 for what's out of scope vs. planned for later.
+v2 — Claude-entry architecture. The supervisor is Claude; Codex is invoked as a subprocess for planning + review. Both run on subscription (Pro/Max for Claude; ChatGPT Plus for Codex headless).
