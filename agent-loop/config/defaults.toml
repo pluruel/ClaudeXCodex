@@ -1,0 +1,36 @@
+# agent-loop default safety configuration.
+# Override per-repo by creating `<target_repo>/.agent-loop/config.toml`
+# with the same shape.
+
+[safety.bash_block]
+patterns = [
+  "^\\s*git\\s+(commit|push|merge|rebase|reset\\s+--hard|clean\\s+-f)",
+  "^\\s*rm\\s+-rf",
+  "^\\s*sudo\\b",
+  "alembic\\s+upgrade",
+  "prisma\\s+migrate\\s+(deploy|reset)",
+  "psql.*-c\\s+['\"]?(DROP|TRUNCATE|DELETE)",
+  "^\\s*curl.*\\|\\s*(sh|bash)",
+  "^\\s*npm\\s+publish",
+  "^\\s*docker\\s+(push|rmi)",
+]
+
+[safety.sensitive_paths]
+patterns = [
+  "\\.env(\\..+)?$",
+  "secrets/",
+  "credentials\\.",
+  "/migrations/",
+  "/alembic/versions/",
+  "ci/",
+  ".github/workflows/",
+  "Dockerfile",
+  "docker-compose\\.",
+  "package-lock\\.json$",
+  "poetry\\.lock$",
+  "uv\\.lock$",
+]
+
+[safety.diff_size]
+warn_files = 15
+warn_lines = 600
