@@ -22,6 +22,11 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--goal", required=True)
     p.add_argument("--slug", required=True)
 
+    # plan-init
+    p = sub.add_parser("plan-init", help="ask Codex to draft initial plan.md")
+    _add_common(p)
+    p.add_argument("--run", required=True)
+
     # init-round
     p = sub.add_parser("init-round", help="render prompt + create round dir")
     _add_common(p)
@@ -151,6 +156,31 @@ def _cmd_init_round(args) -> int:
     rs.start_round(n=next_n, started_at=_dt.datetime.utcnow().isoformat())
     rs.save(run_dir / "state.json")
     _emit({"round_n": next_n, "prompt_path": str(rd / "claude-prompt.md")})
+    return 0
+
+
+@register("plan-init")
+def _cmd_plan_init(args) -> int:
+    from agent_loop.codex_client import call_codex, CodexCallError
+    repo = _Path(args.repo).resolve()
+    run_dir = _run_dir(repo, args.run)
+    goal = (run_dir / "goal.md").read_text(encoding="utf-8").strip()
+    meta_prompt = (
+        "You are drafting the initial implementation plan for the following goal. "
+        "Output ONLY a markdown document with two sections:\n\n"
+        "# Plan\n\n## Tasks\n1. [ ] <first concrete task>\n2. [ ] ...\n\n"
+        "## Notes\n<short strategic notes>\n\n"
+        "Aim for 3-7 tasks, each completable in one round. No prose outside these sections.\n\n"
+        f"## Goal\n{goal}\n"
+    )
+    try:
+        res = call_codex(meta_prompt)
+    except CodexCallError as e:
+        print(f"codex error: {e}", file=sys.stderr)
+        return 1
+    plan_path = run_dir / "plan.md"
+    plan_path.write_text(res.final_text, encoding="utf-8")
+    _emit({"plan_path": str(plan_path), "summary": "plan drafted"})
     return 0
 
 
