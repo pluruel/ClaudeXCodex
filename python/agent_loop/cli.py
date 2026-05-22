@@ -163,8 +163,8 @@ def _cmd_init_run(args) -> int:
     run_dir = _run_dir(repo, run_id)
     (run_dir / "rounds").mkdir(parents=True, exist_ok=True)
     (run_dir / "shared").mkdir(parents=True, exist_ok=True)
-    (run_dir / "goal.md").write_text(args.goal + "\n")
-    (run_dir / "memo.md").write_text("# Round Memos\n\n")
+    (run_dir / "goal.md").write_text(args.goal + "\n", encoding="utf-8")
+    (run_dir / "memo.md").write_text("# Round Memos\n\n", encoding="utf-8")
     rs = RunState.new(run_id=run_id, goal_path="goal.md", plan_path="plan.md")
     rs.save(run_dir / "state.json")
     _emit({"run_id": run_id, "run_dir": str(run_dir)})
@@ -179,8 +179,8 @@ def _cmd_init_round(args) -> int:
     next_n = (rs.rounds[-1].n + 1) if rs.rounds else 1
     rd = run_dir / "rounds" / f"{next_n:02d}"
     rd.mkdir(parents=True, exist_ok=True)
-    prompt_text = _Path(args.prompt_file).read_text()
-    (rd / "claude-prompt.md").write_text(prompt_text)
+    prompt_text = _Path(args.prompt_file).read_text(encoding="utf-8")
+    (rd / "claude-prompt.md").write_text(prompt_text, encoding="utf-8")
     rs.start_round(n=next_n, started_at=_dt.datetime.utcnow().isoformat())
     rs.save(run_dir / "state.json")
     _emit({"round_n": next_n, "prompt_path": str(rd / "claude-prompt.md")})
@@ -481,8 +481,11 @@ def _cmd_status(args) -> int:
     memo_tail = ""
     memo_path = run_dir / "memo.md"
     if memo_path.exists():
-        memo_tail = "\n".join(memo_path.read_text().splitlines()[-30:])
-    _emit({"state": _json.loads((run_dir / "state.json").read_text()), "memo_tail": memo_tail})
+        memo_tail = "\n".join(memo_path.read_text(encoding="utf-8").splitlines()[-30:])
+    _emit({
+        "state": _json.loads((run_dir / "state.json").read_text(encoding="utf-8")),
+        "memo_tail": memo_tail,
+    })
     return 0
 
 
@@ -493,9 +496,14 @@ def _cmd_finalize(args) -> int:
     rs = RunState.load(run_dir / "state.json")
     rs.status = "completed"
     rs.save(run_dir / "state.json")
-    memo = (run_dir / "memo.md").read_text() if (run_dir / "memo.md").exists() else ""
+    memo = (
+        (run_dir / "memo.md").read_text(encoding="utf-8")
+        if (run_dir / "memo.md").exists()
+        else ""
+    )
     (run_dir / "final-report.md").write_text(
-        f"# Final Report — {rs.run_id}\n\nStatus: {rs.status}\n\n## Round Memos\n\n{memo}\n"
+        f"# Final Report — {rs.run_id}\n\nStatus: {rs.status}\n\n## Round Memos\n\n{memo}\n",
+        encoding="utf-8",
     )
     _emit({"final_report": str(run_dir / "final-report.md"), "status": rs.status})
     return 0
@@ -520,7 +528,7 @@ def _cmd_inspect(args) -> int:
     if not target.exists():
         _emit({"error": f"not found: {target}"})
         return 1
-    text = target.read_text()
+    text = target.read_text(encoding="utf-8")
     if args.lines:
         a, b = (int(x) for x in args.lines.split("-"))
         lines = text.splitlines()
@@ -544,8 +552,8 @@ def _cmd_inspect(args) -> int:
 def _cmd_write_review(args) -> int:
     repo = _Path(args.repo).resolve()
     rd = _run_dir(repo, args.run) / "rounds" / f"{args.round:02d}"
-    body = _Path(args.review_file).read_text()
-    (rd / "codex-review.md").write_text(body)
+    body = _Path(args.review_file).read_text(encoding="utf-8")
+    (rd / "codex-review.md").write_text(body, encoding="utf-8")
     rs = RunState.load(_run_dir(repo, args.run) / "state.json")
     rs.set_round_decision(args.round, args.decision)
     rs.set_round_phase(args.round, "reviewed")
@@ -558,8 +566,8 @@ def _cmd_write_review(args) -> int:
 def _cmd_append_memo(args) -> int:
     repo = _Path(args.repo).resolve()
     memo_path = _run_dir(repo, args.run) / "memo.md"
-    body = _Path(args.memo_file).read_text()
-    with memo_path.open("a") as f:
+    body = _Path(args.memo_file).read_text(encoding="utf-8")
+    with memo_path.open("a", encoding="utf-8") as f:
         f.write("\n" + body.strip() + "\n")
     rs = RunState.load(_run_dir(repo, args.run) / "state.json")
     rs.set_round_phase(args.round, "memo_written")

@@ -51,7 +51,7 @@ def _scalar(body: str) -> str:
 
 
 def parse_result(path: Path) -> ClaudeResult:
-    text = path.read_text()
+    text = path.read_text(encoding="utf-8")
     sec = _sections(text)
     r = ClaudeResult()
     if "summary" in sec:

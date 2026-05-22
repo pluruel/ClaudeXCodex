@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import os
 import subprocess
+import sys
 from pathlib import Path
 
 
@@ -10,7 +11,8 @@ def _run(args, cwd, env_overrides=None):
     env = os.environ.copy()
     if env_overrides:
         env.update(env_overrides)
-    return subprocess.run(["agent-loop", *args], cwd=cwd, capture_output=True,
+    return subprocess.run([sys.executable, "-m", "agent_loop", *args],
+                          cwd=cwd, capture_output=True,
                           text=True, check=False, env=env)
 
 

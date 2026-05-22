@@ -1,6 +1,6 @@
 # agent-loop (Python core)
 
-Python package that powers the agent-loop Codex plugin: Claude SDK invocation, run-state persistence, diff capture, scout signals, safety hooks.
+Python package that powers the agent-loop Claude Code plugin: Codex subprocess wrapper, run-state persistence, diff capture, scout signals, safety hooks.
 
 ## Development setup
 
@@ -13,13 +13,23 @@ python -m venv .venv
 
 All test and dev commands assume the project's `.venv`. Do not install into a system Python.
 
-## CLI entry point
+## CLI invocation
 
-After install, `agent-loop` is available as a script. See `agent-loop --help`.
+The CLI is always invoked through Python — there is no shell wrapper used at runtime:
+
+```bash
+python -m agent_loop --help
+# or, from the plugin install (no pip install needed):
+python "${CLAUDE_PLUGIN_ROOT}/python/agent_loop/__main__.py" --help
+```
+
+The editable install does create an `agent-loop` entry-point script as a convenience for ad-hoc local use, but the plugin's skill files and the test suite both invoke the module via `python -m agent_loop` so behavior is identical regardless of PATH state.
 
 ## Module map
 
 - `cli.py` — argparse + subcommand handlers
+- `__main__.py` — `python -m agent_loop` entry (also runnable as a bare script)
+- `codex_client.py` — headless `codex exec --json` subprocess wrapper
 - `run_state.py` — RunState + phase machine
 - `resume.py` — interrupted-run detection
 - `scout.py` — file tree + grep signal extractor (Codex-facing JSON)
@@ -29,5 +39,4 @@ After install, `agent-loop` is available as a script. See `agent-loop --help`.
 - `progress_parser.py` — progress.md tail analysis
 - `diff_capture.py` — git baseline + diff + stats
 - `payload.py` — review-payload.json builder
-- `safety.py` — bash/path/diff checks + SDK PreToolUse hook
-- `sdk_runner.py` — async Claude SDK round runner
+- `safety.py` — bash/path/diff checks

@@ -1,6 +1,6 @@
 ---
 name: shared-knowledge
-description: Read/append discipline for `<run_dir>/shared/` (the cross-round knowledge area). Mostly used by workers; the supervisor reads it only via `agent-loop inspect` if needed.
+description: Read/append discipline for `<run_dir>/shared/` (the cross-round knowledge area). Mostly used by workers; the supervisor reads it only via the `inspect` subcommand if needed.
 ---
 
 # shared-knowledge
@@ -14,7 +14,7 @@ description: Read/append discipline for `<run_dir>/shared/` (the cross-round kno
 ## Who writes
 
 - **Workers (subagents)** append to all three during their rounds.
-- **Codex** sees them indirectly: `agent-loop plan-round` and `review-round` may include slices when relevant.
+- **Codex** sees them indirectly: the `plan-round` and `review-round` subcommands may include slices when relevant.
 - **You (supervisor)** rarely write. If you do (e.g., recording a strategic call you made yourself), use `Edit` to append a single line — do NOT overwrite.
 
 ## When to read
@@ -22,7 +22,7 @@ description: Read/append discipline for `<run_dir>/shared/` (the cross-round kno
 You almost never read these. If reasoning about a stale-looking pattern in a later round, you may run:
 
 ```
-agent-loop inspect --run <id> --round 1 --file ../../shared/knowledge.md --lines 1-50
+python "${CLAUDE_PLUGIN_ROOT}/python/agent_loop/__main__.py" inspect --run <id> --round 1 --file ../../shared/knowledge.md --lines 1-50
 ```
 
 But default to trusting the round payload + memo.

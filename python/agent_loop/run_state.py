@@ -64,14 +64,14 @@ class RunState:
 
     @classmethod
     def load(cls, path: Path) -> "RunState":
-        raw = json.loads(path.read_text())
+        raw = json.loads(path.read_text(encoding="utf-8"))
         rounds = [RoundEntry(**r) for r in raw.pop("rounds", [])]
         return cls(rounds=rounds, **raw)
 
     def save(self, path: Path) -> None:
         path.parent.mkdir(parents=True, exist_ok=True)
         data = asdict(self)
-        path.write_text(json.dumps(data, indent=2) + "\n")
+        path.write_text(json.dumps(data, indent=2) + "\n", encoding="utf-8")
 
     def start_round(self, *, n: int, started_at: str) -> None:
         self.current_round = n

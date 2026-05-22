@@ -2,12 +2,13 @@ from __future__ import annotations
 
 import json
 import subprocess
+import sys
 from pathlib import Path
 
 
 def _run(args: list[str], cwd: Path) -> subprocess.CompletedProcess:
     return subprocess.run(
-        ["agent-loop", *args],
+        [sys.executable, "-m", "agent_loop", *args],
         cwd=cwd,
         capture_output=True,
         text=True,

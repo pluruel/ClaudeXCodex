@@ -1,11 +1,45 @@
 """Shared pytest fixtures."""
 from __future__ import annotations
 
+import os
 import shutil
 import subprocess
+import sys
 from pathlib import Path
 
 import pytest
+
+
+# Invocation prefix used by every CLI test. Going through ``python -m agent_loop``
+# keeps the tests independent of the optional ``agent-loop`` entry-point script
+# being on PATH; as long as the package is importable (which the editable install
+# in CI guarantees), this works the same on every platform.
+AGENT_LOOP_CMD: list[str] = [sys.executable, "-m", "agent_loop"]
+
+
+def run_cli(
+    args: list[str],
+    cwd: Path,
+    env_overrides: dict[str, str] | None = None,
+) -> subprocess.CompletedProcess:
+    """Invoke the agent-loop CLI as a Python module and return the result."""
+    env = os.environ.copy()
+    if env_overrides:
+        env.update(env_overrides)
+    return subprocess.run(
+        [*AGENT_LOOP_CMD, *args],
+        cwd=cwd,
+        capture_output=True,
+        text=True,
+        check=False,
+        env=env,
+    )
+
+
+@pytest.fixture
+def cli():
+    """Function fixture that invokes the agent-loop CLI via ``python -m agent_loop``."""
+    return run_cli
 
 
 @pytest.fixture

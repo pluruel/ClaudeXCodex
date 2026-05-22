@@ -21,7 +21,8 @@ def test_parse_mixed(tmp_path: Path) -> None:
         "- [done] 2026-05-22T10:16:42 — append shared/knowledge.md\n"
         "- [doing] 2026-05-22T10:17:10 — write middleware.py\n"
         "- [planned] add tests\n"
-        "- [planned] run pytest\n"
+        "- [planned] run pytest\n",
+        encoding="utf-8",
     )
     snap = parse_progress(p)
     assert snap.done_count == 2
@@ -34,7 +35,8 @@ def test_parse_done_only(tmp_path: Path) -> None:
     p = tmp_path / "progress.md"
     p.write_text(
         "- [done] 2026-05-22T10:00:00 — step 1\n"
-        "- [done] 2026-05-22T10:05:00 — step 2\n"
+        "- [done] 2026-05-22T10:05:00 — step 2\n",
+        encoding="utf-8",
     )
     snap = parse_progress(p)
     assert snap.doing is None

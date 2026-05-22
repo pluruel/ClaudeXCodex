@@ -38,7 +38,7 @@ false
 
 def test_parse_complete_result(tmp_path: Path) -> None:
     p = tmp_path / "claude-result.md"
-    p.write_text(SAMPLE)
+    p.write_text(SAMPLE, encoding="utf-8")
     r = parse_result(p)
     assert isinstance(r, ClaudeResult)
     assert r.summary.startswith("JWT verify")
@@ -53,7 +53,7 @@ def test_parse_complete_result(tmp_path: Path) -> None:
 
 def test_parse_missing_sections_returns_defaults(tmp_path: Path) -> None:
     p = tmp_path / "claude-result.md"
-    p.write_text("# Claude Result\n\n## Summary\nminimal.\n")
+    p.write_text("# Claude Result\n\n## Summary\nminimal.\n", encoding="utf-8")
     r = parse_result(p)
     assert r.summary == "minimal."
     assert r.changed_files == []
@@ -64,6 +64,9 @@ def test_parse_missing_sections_returns_defaults(tmp_path: Path) -> None:
 
 def test_parse_requires_user_true(tmp_path: Path) -> None:
     p = tmp_path / "claude-result.md"
-    p.write_text(SAMPLE.replace("Requires User\nfalse", "Requires User\ntrue"))
+    p.write_text(
+        SAMPLE.replace("Requires User\nfalse", "Requires User\ntrue"),
+        encoding="utf-8",
+    )
     r = parse_result(p)
     assert r.requires_user is True

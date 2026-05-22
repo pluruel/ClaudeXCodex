@@ -25,7 +25,7 @@ def parse_progress(path: Path) -> ProgressSnapshot:
     snap = ProgressSnapshot()
     if not path.exists():
         return snap
-    for line in path.read_text().splitlines():
+    for line in path.read_text(encoding="utf-8").splitlines():
         m = _LINE.match(line.strip())
         if not m:
             continue

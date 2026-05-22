@@ -1,6 +1,6 @@
 # review-payload-schema
 
-The JSON that `agent-loop dispatch` writes to `<round_dir>/review-payload.json` and that Codex consumes in `round-review`.
+The JSON that the `review-round` subcommand writes to `<round_dir>/review-payload.json` (invoked as `python "${CLAUDE_PLUGIN_ROOT}/python/agent_loop/__main__.py" review-round ...`) and that Codex consumes during the review pass.
 
 ```json
 {

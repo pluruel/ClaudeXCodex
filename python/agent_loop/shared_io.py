@@ -15,25 +15,25 @@ def _ensure(shared: Path, filename: str) -> Path:
     shared.mkdir(parents=True, exist_ok=True)
     p = shared / filename
     if not p.exists():
-        p.write_text(_HEADERS[filename])
+        p.write_text(_HEADERS[filename], encoding="utf-8")
     return p
 
 
 def append_knowledge(shared: Path, fact: str) -> None:
     p = _ensure(shared, "knowledge.md")
-    with p.open("a") as f:
+    with p.open("a", encoding="utf-8") as f:
         f.write(f"\n- {fact}\n")
 
 
 def append_decision(shared: Path, decision: str, *, source: str) -> None:
     p = _ensure(shared, "decisions.md")
-    with p.open("a") as f:
+    with p.open("a", encoding="utf-8") as f:
         f.write(f"\n- [{source}] {decision}\n")
 
 
 def append_open_question(shared: Path, question: str) -> None:
     p = _ensure(shared, "open-questions.md")
-    with p.open("a") as f:
+    with p.open("a", encoding="utf-8") as f:
         f.write(f"\n- {question}\n")
 
 
