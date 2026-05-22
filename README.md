@@ -2,8 +2,6 @@
 
 A Claude Code plugin where the interactive Claude session is the supervisor, dispatching worker subagents via the Task tool and using Codex CLI (headless `codex exec --json`) for planning and review. All artifacts go to `.agent-loop/runs/<id>/`.
 
-See `docs/superpowers/plans/2026-05-22-claude-entry-pivot.md` for the architecture pivot details. The original spec (`docs/superpowers/specs/2026-05-22-agent-loop-codex-plugin-design.md`) is superseded.
-
 ## Repo layout
 
 - `.claude-plugin/plugin.json` — Claude Code plugin manifest
@@ -11,7 +9,6 @@ See `docs/superpowers/plans/2026-05-22-claude-entry-pivot.md` for the architectu
 - `skills/` — plugin skills (`agent-loop/`, `references/`)
 - `config/` — packaged plugin defaults (e.g. `defaults.toml`)
 - `python/` — Python core (`python -m agent_loop` CLI, codex subprocess wrapper, state, safety)
-- `docs/superpowers/` — spec and implementation plans
 
 ## Install
 
