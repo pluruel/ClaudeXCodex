@@ -110,5 +110,173 @@ def register(name: str):
 
 # Handlers will be added in Task 3.2 below.
 
+import datetime as _dt
+import json as _json
+from pathlib import Path as _Path
+
+from agent_loop.run_state import RunState
+
+
+def _run_dir(repo: _Path, run_id: str) -> _Path:
+    return repo / ".agent-loop" / "runs" / run_id
+
+
+def _today_slug(slug: str) -> str:
+    return f"{_dt.date.today().isoformat()}-{slug}"
+
+
+def _emit(obj) -> None:
+    print(_json.dumps(obj, indent=2))
+
+
+@register("init-run")
+def _cmd_init_run(args) -> int:
+    repo = _Path(args.repo).resolve()
+    run_id = _today_slug(args.slug)
+    run_dir = _run_dir(repo, run_id)
+    (run_dir / "rounds").mkdir(parents=True, exist_ok=True)
+    (run_dir / "shared").mkdir(parents=True, exist_ok=True)
+    (run_dir / "goal.md").write_text(args.goal + "\n")
+    (run_dir / "memo.md").write_text("# Round Memos\n\n")
+    rs = RunState.new(run_id=run_id, goal_path="goal.md", plan_path="plan.md")
+    rs.save(run_dir / "state.json")
+    _emit({"run_id": run_id, "run_dir": str(run_dir)})
+    return 0
+
+
+@register("init-round")
+def _cmd_init_round(args) -> int:
+    repo = _Path(args.repo).resolve()
+    run_dir = _run_dir(repo, args.run)
+    rs = RunState.load(run_dir / "state.json")
+    next_n = (rs.rounds[-1].n + 1) if rs.rounds else 1
+    rd = run_dir / "rounds" / f"{next_n:02d}"
+    rd.mkdir(parents=True, exist_ok=True)
+    prompt_text = _Path(args.prompt_file).read_text()
+    (rd / "claude-prompt.md").write_text(prompt_text)
+    rs.start_round(n=next_n, started_at=_dt.datetime.utcnow().isoformat())
+    rs.save(run_dir / "state.json")
+    _emit({"round_n": next_n, "prompt_path": str(rd / "claude-prompt.md")})
+    return 0
+
+
+@register("scout")
+def _cmd_scout(args) -> int:
+    from agent_loop.scout import scout
+    repo = _Path(args.repo).resolve()
+    rep = scout(repo, goal=args.goal, keywords=args.keywords, max_files=args.max_files)
+    _emit({
+        "file_tree": rep.file_tree,
+        "grep_hits": rep.grep_hits,
+        "headers": rep.headers,
+    })
+    return 0
+
+
+@register("status")
+def _cmd_status(args) -> int:
+    from agent_loop.resume import find_active_run
+    repo = _Path(args.repo).resolve()
+    if args.run:
+        run_dir = _run_dir(repo, args.run)
+    else:
+        run_dir = find_active_run(repo)
+        if run_dir is None:
+            _emit({"error": "no active run"})
+            return 1
+    rs = RunState.load(run_dir / "state.json")
+    memo_tail = ""
+    memo_path = run_dir / "memo.md"
+    if memo_path.exists():
+        memo_tail = "\n".join(memo_path.read_text().splitlines()[-30:])
+    _emit({"state": _json.loads((run_dir / "state.json").read_text()), "memo_tail": memo_tail})
+    return 0
+
+
+@register("finalize")
+def _cmd_finalize(args) -> int:
+    repo = _Path(args.repo).resolve()
+    run_dir = _run_dir(repo, args.run)
+    rs = RunState.load(run_dir / "state.json")
+    rs.status = "completed"
+    rs.save(run_dir / "state.json")
+    memo = (run_dir / "memo.md").read_text() if (run_dir / "memo.md").exists() else ""
+    (run_dir / "final-report.md").write_text(
+        f"# Final Report — {rs.run_id}\n\nStatus: {rs.status}\n\n## Round Memos\n\n{memo}\n"
+    )
+    _emit({"final_report": str(run_dir / "final-report.md"), "status": rs.status})
+    return 0
+
+
+@register("abort")
+def _cmd_abort(args) -> int:
+    repo = _Path(args.repo).resolve()
+    run_dir = _run_dir(repo, args.run)
+    rs = RunState.load(run_dir / "state.json")
+    rs.status = "aborted"
+    rs.save(run_dir / "state.json")
+    _emit({"status": rs.status})
+    return 0
+
+
+@register("inspect")
+def _cmd_inspect(args) -> int:
+    repo = _Path(args.repo).resolve()
+    rd = _run_dir(repo, args.run) / "rounds" / f"{args.round:02d}"
+    target = rd / args.file
+    if not target.exists():
+        _emit({"error": f"not found: {target}"})
+        return 1
+    text = target.read_text()
+    if args.lines:
+        a, b = (int(x) for x in args.lines.split("-"))
+        lines = text.splitlines()
+        text = "\n".join(lines[a - 1:b])
+    if args.path:
+        # naive filter for diff.patch: only emit chunks mentioning the path
+        if args.file == "diff.patch":
+            chunks = []
+            keep = False
+            for ln in text.splitlines():
+                if ln.startswith("diff --git "):
+                    keep = args.path in ln
+                if keep:
+                    chunks.append(ln)
+            text = "\n".join(chunks)
+    print(text)
+    return 0
+
+
+@register("write-review")
+def _cmd_write_review(args) -> int:
+    repo = _Path(args.repo).resolve()
+    rd = _run_dir(repo, args.run) / "rounds" / f"{args.round:02d}"
+    body = _Path(args.review_file).read_text()
+    (rd / "codex-review.md").write_text(body)
+    rs = RunState.load(_run_dir(repo, args.run) / "state.json")
+    rs.set_round_decision(args.round, args.decision)
+    rs.set_round_phase(args.round, "reviewed")
+    rs.save(_run_dir(repo, args.run) / "state.json")
+    _emit({"decision": args.decision, "review_path": str(rd / "codex-review.md")})
+    return 0
+
+
+@register("append-memo")
+def _cmd_append_memo(args) -> int:
+    repo = _Path(args.repo).resolve()
+    memo_path = _run_dir(repo, args.run) / "memo.md"
+    body = _Path(args.memo_file).read_text()
+    with memo_path.open("a") as f:
+        f.write("\n" + body.strip() + "\n")
+    rs = RunState.load(_run_dir(repo, args.run) / "state.json")
+    rs.set_round_phase(args.round, "memo_written")
+    # mark completed at end
+    rs.set_round_phase(args.round, "completed")
+    rs.rounds[-1].ended_at = _dt.datetime.utcnow().isoformat()
+    rs.save(_run_dir(repo, args.run) / "state.json")
+    _emit({"memo_path": str(memo_path)})
+    return 0
+
+
 if __name__ == "__main__":
     sys.exit(main())
