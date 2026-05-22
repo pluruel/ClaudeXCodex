@@ -1,41 +1,38 @@
 ---
 name: round-memo
-description: Write the 5–10 line compressed memo for this round, appended to memo.md.
+description: Format for the 5-10 line memo the supervisor appends after each round via `agent-loop append-memo`.
 ---
 
 # round-memo
 
-Invoked after `write-review`. The output is appended to `<run_dir>/memo.md` by `agent-loop append-memo`.
+After `agent-loop review-round` returns its decision, the supervisor writes a short memo and appends via `agent-loop append-memo --memo-file <tmp>`.
 
-## Format (hard limits)
+## Format (hard limits, total <= 10 lines)
 
 ```text
 ## Round N — <DECISION>
-- Goal progress: <single line, what % done in spirit>
-- Top risks: <≤3 bullets, very short>
-- Carry forward: <≤3 bullets, will be quoted in next prompt verbatim>
-- Sensitive: <"none" or 1 line describing what tripped>
+- Goal progress: <single line>
+- Top risks: <up to 3 short bullets>
+- Carry forward: <up to 3 short bullets, will be in next round's prompt>
+- Sensitive: <"none" or one line>
 - Diff size: <files=N, +X/-Y>
 ```
 
+## Where to get the content
+
+- Decision: from `agent-loop review-round` JSON (`decision` key).
+- Goal progress / risks / carry forward: you may read `codex-review.md` for ONE quick pass if needed. Avoid re-reading it later — the memo is your compressed handoff.
+- Diff size: from the review-round JSON (`safety_flags` mentions size flags; you can also get exact numbers from `agent-loop status` if needed).
+
 ## Rules
 
-- Total ≤ 10 lines including heading and bullets
-- Each bullet ≤ 80 chars
-- "Carry forward" is the *only* connection between rounds in the worker prompt — make every word count
-- Do NOT quote findings verbatim from `codex-review.md` — compress them
-
-## Why this matters
-
-`memo.md` is the *only* full-history artifact you re-read in later rounds (besides shared/). Its compression is what makes Approach B (Codex in-session loop) token-flat across rounds. If you let memo bloat, the whole token discipline collapses.
-
-## Quality gate
-
-Before writing the memo, ask: if I had to plan round N+1 from this memo alone (no review, no result.md), would I know what to do? If yes, the memo is sufficient. If no, tighten the Carry forward bullets.
+- <= 10 lines. <= 80 chars per bullet.
+- "Carry forward" matters most: those bullets get quoted verbatim into the next prompt by `plan-round`.
+- Do not quote findings verbatim — compress.
 
 ## Save destination
 
-Write to a temp file (e.g., `<run_dir>/.tmp-memo.md`) then:
+Write to a temp file (e.g., `<run_dir>/.tmp-memo.md`), then:
 
 `Bash: agent-loop append-memo --run <run_id> --round N --memo-file <tmp_path>`
 

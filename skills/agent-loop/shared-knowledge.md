@@ -1,40 +1,34 @@
 ---
 name: shared-knowledge
-description: Read-and-append discipline for the shared/ memory area, used by Codex when it needs project-wide context.
+description: Read/append discipline for `<run_dir>/shared/` (the cross-round knowledge area). Mostly used by workers; the supervisor reads it only via `agent-loop inspect` if needed.
 ---
 
-# shared-knowledge (Codex side)
+# shared-knowledge
 
-The `shared/` directory is the project-wide memory. Claude appends to it during dispatch. Codex reads from it during planning and writes to it sparingly during review.
+`shared/` lives at `<run_dir>/shared/` and holds three append-only files:
 
-## Files
+- `knowledge.md` — facts about the target repo
+- `decisions.md` — design decisions across rounds
+- `open-questions.md` — unresolved questions; resolutions can be appended later
 
-- `knowledge.md` — repo facts (file purpose, conventions, dependencies). Append-only.
-- `decisions.md` — design decisions across rounds. Append-only.
-- `open-questions.md` — unresolved questions; resolutions can be appended later.
+## Who writes
 
-## When Codex reads shared/
+- **Workers (subagents)** append to all three during their rounds.
+- **Codex** sees them indirectly: `agent-loop plan-round` and `review-round` may include slices when relevant.
+- **You (supervisor)** rarely write. If you do (e.g., recording a strategic call you made yourself), use `Edit` to append a single line — do NOT overwrite.
 
-- `plan-from-goal` may read `shared/knowledge.md` if it's non-empty (subsequent runs in same repo).
-- `plan-from-review` reads `shared_delta` from payload (Claude's last-round additions). Reading the full file is rarely necessary; use `agent-loop inspect` only if you need older entries.
-- `round-review` may consult `shared/decisions.md` to check consistency.
+## When to read
 
-## When Codex writes shared/
+You almost never read these. If reasoning about a stale-looking pattern in a later round, you may run:
 
-Rare. Mostly Claude does it. Codex should write only:
+```
+agent-loop inspect --run <id> --round 1 --file ../../shared/knowledge.md --lines 1-50
+```
 
-- A `decisions.md` entry when *Codex itself* makes a strategic choice (e.g., "Codex chose to stop and request user input because …"). Tag with `[codex-round-N]`.
-- An `open-questions.md` entry when review uncovers something neither Claude's result nor existing knowledge answers.
+But default to trusting the round payload + memo.
 
-To append from Codex, use `Edit` or `Write` directly on the file with the file's existing content + new bullet. Do NOT overwrite existing content.
+## Format conventions
 
-## Append format
-
-- `knowledge.md`: `- <fact in one line>`
-- `decisions.md`: `- [<source>] <decision> (<one-line reason>)`
-- `open-questions.md`: `- <question>` (resolutions: indent below as `  - Resolved (round N): <answer>`)
-
-## Token discipline
-
-- Do not Read whole shared/ files in every round. Trust `shared_delta` in the payload.
-- For older context, use `agent-loop inspect --run <id> --round 1 --file ../../shared/knowledge.md --lines a-b` (note: inspect rooted at round dir, so use `../../shared/...`).
+- `knowledge.md`: `- <one-line fact>`
+- `decisions.md`: `- [<source>] <decision> (<short reason>)` where `<source>` is `round-N` or `codex-round-N` or `supervisor-round-N`.
+- `open-questions.md`: `- <question>` (resolutions: indented `  - Resolved (round N): <answer>`).

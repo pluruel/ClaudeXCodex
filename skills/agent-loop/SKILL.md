@@ -1,77 +1,94 @@
 ---
 name: agent-loop
-description: Codex-driven Claude review loop. When the user types `/agent-loop start "<goal>"`, Codex acts as the orchestrator that dispatches Claude (via the bundled `agent-loop` Python CLI) as a worker, reviews each round, generates the next prompt, and continues until APPROVE or STOP_FOR_USER.
+description: When the user types `/agent-loop start "<goal>"` (or `/agent-loop continue`), this skill turns the current Claude session into the supervisor of a bounded review loop. Codex CLI (headless `codex exec --json`) does planning and review; Claude subagents (Task tool) do implementation; the supervisor (this Claude session) only reads tiny status JSON. Artifacts in `.agent-loop/runs/<id>/`.
 ---
 
-# agent-loop — Codex Orchestration Skill
+# agent-loop — Claude Supervisor Skill
 
-When invoked (`/agent-loop start "<goal>"` or `/agent-loop continue …`), follow this protocol exactly. The skill is rigid — do not deviate.
+You are the supervisor of a bounded review loop. Your context must stay lean. The heavy thinking lives in Codex subprocess calls and in worker subagents; you only see filenames and tiny status JSON.
 
 ## Required reading on first invocation per session
 
-- `references/claude-prompt-template.md` — what we hand to Claude
-- `references/claude-result-schema.md` — what Claude produces
-- `references/review-payload-schema.md` — the small JSON you consume
-- `references/shared-knowledge-schema.md` — format of `shared/*` files
+- `references/claude-prompt-template.md` — what Codex drafts for each round
+- `references/claude-result-schema.md` — what the worker writes back
+- `references/review-payload-schema.md` — what Codex sees when reviewing
 
-You do not need to re-read these in every invocation; trust the schemas.
+You do NOT need to re-read these every invocation; trust the schemas.
 
-## Token discipline (mandatory)
+## Context discipline (mandatory)
 
-- You do not read target repo files directly. Use `agent-loop scout` for signals.
-- You do not read raw diffs / test logs / SDK message streams. Use `agent-loop inspect` only when a specific section is necessary.
-- Per-round you only ingest: `review-payload.json`, this round's `claude-result.md`, `memo.md`, and `shared_delta` from the payload.
+- You never read full diffs, test logs, claude-result.md, claude-prompt.md, or codex-review.md.
+- You only ingest the small JSON each CLI subcommand emits.
+- For details, you can run `agent-loop inspect --round N --file X --lines a-b` to extract a slice.
+- You never call `codex exec` or `codex` directly — always via `agent-loop plan-init|plan-round|review-round`.
 
-## Loop protocol
-
-### On `start "<goal>"`
+## Loop protocol — On `start "<goal>"`
 
 1. `Bash: agent-loop init-run --goal "<goal>" --slug "<short-slug>"`
    → JSON `{run_id, run_dir}`. Remember `run_id`.
-2. Apply **plan-from-goal** (see `plan-from-goal.md`) →
-   produce `plan.md` body and the Round 1 prompt body (with Reading List).
-3. Write `plan.md` (via `Write` to `<run_dir>/plan.md`) and the prompt file.
-4. `Bash: agent-loop init-round --run <run_id> --prompt-file <path>`
-   → JSON `{round_n, prompt_path}`.
-5. Enter the round loop (below).
+2. `Bash: agent-loop plan-init --run <run_id>`
+   → JSON `{plan_path, summary}`. (Codex drafted plan.md on disk.)
+3. Enter round loop (next section).
 
-### Round loop (repeat until APPROVE or STOP_FOR_USER)
+## Round loop (repeat until APPROVE / STOP_FOR_USER)
 
-1. `Bash: agent-loop dispatch --run <run_id> --round <N>`
-   → JSON payload summary (result_summary, diff_summary, safety_flags, artifact_paths, shared_delta).
-2. Read `<run_dir>/memo.md` (entire).
-3. Read `<run_dir>/rounds/NN/claude-result.md` (entire — this round's report).
-4. Apply **round-review** (see `round-review.md`) → decide `APPROVE | NEEDS_CHANGES | STOP_FOR_USER`, write `codex-review.md` body.
-5. `Bash: agent-loop write-review --run <run_id> --round <N> --decision <X> --review-file <path>`.
-6. Apply **round-memo** (see `round-memo.md`) → 5–10 line memo body.
-7. `Bash: agent-loop append-memo --run <run_id> --round <N> --memo-file <path>`.
-8. Branch:
-   - **APPROVE** → `Bash: agent-loop finalize --run <run_id>` → end session.
-   - **STOP_FOR_USER** → stop here, wait for user input. Do NOT call dispatch again until user says `/agent-loop continue`.
-   - **NEEDS_CHANGES** → apply **plan-from-review** (see `plan-from-review.md`) → next prompt body, then loop step 1 (`init-round` then `dispatch`).
+For each round N (starting at 1):
 
-### On `continue`
+1. `Bash: agent-loop plan-round --run <run_id>`
+   → JSON `{round_n, prompt_path, summary}`. (Codex drafted the worker prompt.)
+2. `Bash: agent-loop capture-baseline`
+   → JSON `{baseline}`. Save the sha.
+3. **Dispatch worker subagent via Task tool.** The subagent prompt:
 
-1. `Bash: agent-loop continue [--run <id>]`
+   ```
+   Task tool (general-purpose):
+     description: "Worker round N for <run_id>"
+     prompt: |
+       Read .agent-loop/runs/<run_id>/rounds/NN/claude-prompt.md and implement
+       what it specifies. Strict rules:
+       - Follow the Required Reading list in that prompt. Do NOT read Out of Scope.
+       - Append a line to .agent-loop/runs/<run_id>/rounds/NN/progress.md
+         at each meaningful step ([done] / [doing] / [planned]).
+       - Append durable facts to .agent-loop/runs/<run_id>/shared/knowledge.md.
+       - Append design decisions to .agent-loop/runs/<run_id>/shared/decisions.md.
+       - Append open questions to .agent-loop/runs/<run_id>/shared/open-questions.md.
+       - At the end, write .agent-loop/runs/<run_id>/rounds/NN/claude-result.md
+         following the schema in your prompt.
+       - Run: `agent-loop record-diff --run <run_id> --round N --baseline <baseline>`
+       - Run: `agent-loop mark-worker-done --run <run_id> --round N`
+       - Forbidden: git commit, git push, rm -rf, sudo, db migrations,
+         writes to .env / secrets / migrations.
+       - Reply to the supervisor with ONE concise paragraph summarizing
+         what changed (file count + brief outcome). Do NOT paste the full
+         result.md or diff into your reply.
+   ```
+
+4. After Task tool returns, run: `Bash: agent-loop review-round --run <run_id> --round N`
+   → JSON `{decision, review_path, safety_flags}`. Decision is one of APPROVE / NEEDS_CHANGES / STOP_FOR_USER.
+5. `Bash: agent-loop append-memo --run <run_id> --round N --memo-file <path>` — supply a 5-10 line memo derived from the codex-review.md (you may briefly read codex-review.md if needed, but prefer using just the JSON decision and your own brief notes; remember context discipline).
+6. Branch on `decision`:
+   - `APPROVE` → `Bash: agent-loop finalize --run <run_id>`. Tell the user the run completed; point them at `final-report.md`. END.
+   - `STOP_FOR_USER` → Tell the user the loop paused; show `safety_flags` and point at `codex-review.md`. END.
+   - `NEEDS_CHANGES` → Loop back to step 1 (next round).
+
+## Loop protocol — On `continue`
+
+1. `Bash: agent-loop continue` (optionally `--run <id>`)
    → JSON `{action, notes, options, run_id, current_round}`.
-2. Follow `resume-run.md` to interpret the action.
-
-## STOP_FOR_USER triggers
-
-Treat any of these as STOP_FOR_USER without consulting the user via prompt — just stop and tell the user what happened:
-
-- `safety_flags` is non-empty in the payload
-- `result_summary.requires_user` is true (parsed from claude-result.md)
-- `claude_decision_hint` is `blocked`
+2. Interpret `action`:
+   - `plan_round` → start a fresh round at step 1 of the round loop
+   - `claude_completed` (worker done but no review yet) → go straight to step 4 (review-round)
+   - `reviewed` → step 5 (append-memo) and then branch
+   - `user_confirm` → tell the user the options and wait
 
 ## Forbidden actions
 
-- Never run `git commit`, `git push`, or any destructive command yourself. Final integration is the user's job.
-- Never read raw diff/test-log/messages files. Use `inspect` only.
-- Never invent the Python CLI's behavior — if a command's JSON doesn't match expectations, stop and tell the user.
+- Never run `git commit`, `git push`, or any destructive command yourself.
+- Never read full diff/result/log files into your context. Use `inspect` with narrow `--lines` only when the JSON status is insufficient.
+- Never invent CLI behavior — if a subcommand's JSON doesn't match what you expected, stop and report to the user.
 
-## File paths
+## File path conventions
 
 - Run root: `<target_repo>/.agent-loop/runs/<run_id>/`
 - Round dir: `<run_root>/rounds/NN/`
-- Shared: `<run_root>/shared/`
+- Shared memory: `<run_root>/shared/`

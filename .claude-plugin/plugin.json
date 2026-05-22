@@ -1,0 +1,16 @@
+{
+  "name": "agent-loop",
+  "displayName": "Agent Loop",
+  "version": "0.2.0",
+  "description": "Claude-supervised review loop with Codex (subscription-headless) as planner/reviewer and Claude subagents as workers",
+  "author": {
+    "name": "agent-loop authors"
+  },
+  "license": "MIT",
+  "homepage": "https://github.com/pluruel/ClaudeXCodex",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/pluruel/ClaudeXCodex.git"
+  },
+  "keywords": ["agent", "loop", "review", "codex", "automation"]
+}

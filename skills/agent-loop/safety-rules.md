@@ -1,41 +1,39 @@
 ---
 name: safety-rules
-description: Reference for the safety guardrails that the Python core enforces — what Codex should expect and how to react.
+description: Safety guardrails enforced by `agent-loop review-round` (post-dispatch scan) — what triggers them and how the supervisor reacts.
 ---
 
-# safety-rules (informational, Codex side)
+# safety-rules (supervisor-side reference)
 
-Most safety is enforced inside `agent-loop dispatch` (PreToolUse hook + post-dispatch scan). This file documents what triggers them so Codex reacts correctly.
+Safety is enforced in two places:
 
-## What the dispatch step blocks (inside Claude's SDK session)
+1. **Worker subagent prompt** — the supervisor instructs the subagent NEVER to run `git commit/push`, `rm -rf`, `sudo`, DB migrations, or writes to sensitive paths. (No technical block; trust the subagent.)
+2. **Post-dispatch scan** — `agent-loop review-round` reads the diff, computes stats, and emits `safety_flags` in its JSON output.
 
-- Bash matching block patterns: `git commit|push|merge|rebase|reset --hard|clean -f`, `rm -rf`, `sudo`, `alembic upgrade`, `prisma migrate (deploy|reset)`, destructive `psql -c` queries, piped `curl | sh|bash`, `npm publish`, `docker push|rmi`.
-- Edit/Write to sensitive paths: `.env*`, `secrets/`, `credentials.*`, `migrations/`, `alembic/versions/`, `ci/`, `.github/workflows/`, `Dockerfile*`, `package-lock.json`, `poetry.lock`, `uv.lock`.
+## Flags that `review-round` can emit
 
-When blocked, Claude receives a `block` message from the hook. It will document the block in `claude-result.md`.
-
-## What `agent-loop dispatch` flags in the payload
-
-- `safety_flags: ["diff_has_sensitive"]` — diff includes sensitive paths
-- `safety_flags: ["diff_too_many_files"]` — files > config.diff_size.warn_files (default 15)
-- `safety_flags: ["diff_too_many_lines"]` — lines > config.diff_size.warn_lines (default 600)
-- `safety_flags: ["missing_claude_result"]` — Claude didn't write `claude-result.md`
-
-## Codex reaction matrix
-
-| flag present | decision |
+| Flag | Meaning |
 |---|---|
-| Any flag | `STOP_FOR_USER` (always — do not auto-continue) |
-| No flags + decision_hint == "blocked" | `STOP_FOR_USER` |
-| No flags + decision_hint == "completed" + tests pass + goal met | `APPROVE` |
-| No flags + decision_hint == "incomplete" | `NEEDS_CHANGES` (default if no STOP trigger) |
+| `diff_has_sensitive` | Diff includes paths matching `config/defaults.toml` `[safety.sensitive_paths]` patterns. |
+| `diff_too_many_files` | Files changed > `safety.diff_size.warn_files` (default 15). |
+| `diff_too_many_lines` | Lines changed > `safety.diff_size.warn_lines` (default 600). |
+| `missing_claude_result` | Worker didn't write `claude-result.md`. |
 
-## What Codex itself must never do
+## Supervisor reaction matrix
 
-- Run `git commit` / `git push` from any Bash call
-- Edit/Write target repo source files (Codex is the orchestrator, not the worker — Claude does the editing)
-- Read the user's source code directly. Use scout + inspect.
+| Decision (from review-round JSON) | What to do |
+|---|---|
+| Any `safety_flags` non-empty | Treat as STOP_FOR_USER even if `decision == APPROVE` (defense in depth). |
+| `STOP_FOR_USER` | Tell user, point at codex-review.md, end loop. |
+| `APPROVE` (no flags) | `agent-loop finalize`. |
+| `NEEDS_CHANGES` (no flags) | Next round. |
+
+## What you (supervisor) must never do
+
+- Run `git commit`, `git push`, or any destructive command yourself.
+- Edit target repo source files. That's the worker's job.
+- Read the user's full diff/result/test-log into context — use `agent-loop inspect` for narrow slices only.
 
 ## Repo-specific override
 
-If `<target_repo>/.agent-loop/config.toml` exists, the Python core uses its values for the safety patterns. Codex does not need to read this file; just trust the payload's flags.
+If `<target_repo>/.agent-loop/config.toml` exists, the Python core uses its values. You don't need to read this file; trust the payload's flags.

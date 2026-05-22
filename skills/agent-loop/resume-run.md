@@ -1,11 +1,11 @@
 ---
 name: resume-run
-description: Interpret the JSON returned by `agent-loop continue` and resume the loop at the right point.
+description: Interpret the JSON from `agent-loop continue` and resume the loop at the right step.
 ---
 
 # resume-run
 
-Invoked when the user runs `/agent-loop continue [--run <id>]`.
+Invoked when the user types `/agent-loop continue [--run <id>]`.
 
 ## Step 1 — call the CLI
 
@@ -17,30 +17,29 @@ Output JSON: `{action, notes, options, run_id, current_round}`.
 
 | action | what to do |
 |---|---|
-| `plan_round` | Apply `plan-from-goal` (round 1) or `plan-from-review` (round > 1), then `init-round`, then `dispatch`. |
-| `dispatch` | Call `agent-loop dispatch --run <id> --round <current_round>` directly. |
-| `advance_to_review` | Skip dispatch. Go straight to `round-review` for the current round (result.md already exists on disk). |
+| `plan_round` | Start a fresh round at SKILL.md round-loop step 1. |
+| `dispatch` | Phase machine still says `init`. Re-dispatch the worker subagent (round dir + prompt are on disk). |
+| `advance_to_review` | Worker finished but no review yet. Jump straight to `agent-loop review-round`. |
 | `write_review` | Same as `advance_to_review`. |
-| `write_memo` | Apply `round-memo` and call `append-memo`. |
-| `branch_decision` | Read the recorded decision in state.json (Codex did this previously); branch as in the main loop. |
+| `write_memo` | Review is on disk but memo not appended. Compose memo, call `append-memo`. |
+| `branch_decision` | Decision recorded, just branch (APPROVE / STOP_FOR_USER / NEEDS_CHANGES). |
 | `finalize` | Call `agent-loop finalize`. |
-| `user_confirm` | Present `options` to the user, get their pick, act accordingly (see below). |
+| `user_confirm` | Show options to the user; act on their choice. |
 
-## `user_confirm` (dispatch interrupted)
+## `user_confirm` (worker interrupted)
 
-Tell the user, in plain language:
+Tell the user:
 
-> "Round N's dispatch did not complete. Pick one:
-> - **redispatch** — re-run Claude with the same prompt (work may be partially duplicated)
+> "Round N's worker did not complete. Pick one:
+> - **redispatch** — re-dispatch a fresh worker subagent with the existing prompt
 > - **abandon-round** — proceed to review with whatever exists on disk
 > - **abort-run** — mark the run aborted"
 
-Wait for the user's choice. Then:
-
-- `redispatch` → `agent-loop dispatch --run <id> --round <current_round>` (the round dir is reused; messages.jsonl is appended)
-- `abandon-round` → write a stub claude-result.md if missing (saying "(interrupted; no result)") and proceed to `round-review`
+Then:
+- `redispatch` → return to SKILL.md round-loop step 2 (capture-baseline) then step 3 (Task tool dispatch)
+- `abandon-round` → write a stub claude-result.md if missing, then `agent-loop review-round`
 - `abort-run` → `agent-loop abort --run <id>` and stop
 
-## Heartbeat warning
+## Heartbeat
 
-If `agent-loop continue` complains about a recent `last_heartbeat` (< 30s old), it means another session may still be running. Ask the user to confirm before doing anything.
+If `agent-loop continue` warns of a recent `last_heartbeat`, another session may be running. Ask the user before doing anything.
