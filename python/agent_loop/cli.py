@@ -324,7 +324,7 @@ def _cmd_dispatch(args) -> int:
     cfg_path = repo / ".agent-loop" / "config.toml"
     if not cfg_path.exists():
         # fall back to packaged defaults
-        cfg_path = _Path(__file__).resolve().parents[2] / "agent-loop" / "config" / "defaults.toml"
+        cfg_path = _Path(__file__).resolve().parents[2] / "config" / "defaults.toml"
     safety_cfg_data = tomllib.loads(cfg_path.read_text()) if cfg_path.exists() else {}
     safety = SafetyConfig(
         bash_block_patterns=safety_cfg_data.get("safety", {}).get("bash_block", {}).get("patterns", []),

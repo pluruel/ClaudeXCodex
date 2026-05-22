@@ -6,19 +6,37 @@ See `docs/superpowers/specs/2026-05-22-agent-loop-codex-plugin-design.md` for th
 
 ## Repo layout
 
-- `agent-loop/` — Codex plugin (skills, references, config)
+- `.codex-plugin/plugin.json` — Codex plugin manifest
+- `skills/` — Codex plugin skills (`agent-loop/`, `references/`)
+- `config/` — packaged plugin defaults (e.g. `defaults.toml`)
 - `python/` — Python core (`agent-loop` CLI, Claude SDK runner, state, safety)
 - `docs/superpowers/` — spec and implementation plan
 
-## Install (local dev)
+## Install
+
+### Codex plugin (skills)
 
 ```bash
-cd python
-python -m venv .venv
-.venv/bin/pip install -e ".[dev]"
+codex plugin marketplace add pluruel/ClaudeXCodex
 ```
 
-Then point your Codex CLI at the `agent-loop/` directory as a plugin (consult Codex docs for the exact install path).
+### Python core (CLI tool, required for the plugin to do real work)
+
+```bash
+git clone https://github.com/pluruel/ClaudeXCodex.git
+cd ClaudeXCodex/python
+python -m venv .venv
+.venv/bin/pip install -e ".[dev]"
+# Add to PATH:
+export PATH="$PWD/.venv/bin:$PATH"
+```
+
+Set required env vars before use:
+
+```bash
+export ANTHROPIC_API_KEY=sk-ant-...
+export OPENAI_API_KEY=sk-...    # for Codex CLI itself
+```
 
 ## Quick usage
 
