@@ -104,6 +104,33 @@ Resume after interruption (no goal arg → resume most recent run):
 > /agent-loop
 ```
 
+## How it works
+
+Three actors, three context budgets:
+
+- **Codex** (`codex exec --json`, headless subprocess) — does the heavy planning and the per-round review. Each invocation is a fresh process; nothing accumulates.
+- **Worker subagents** (Claude via Task tool) — do the implementation. Each dispatch is a fresh subagent context that only sees the round's `claude-prompt.md` plus what it chooses to read on disk. Workers reply to the supervisor with **exactly one line**: `OK` on success or `FAIL: <one sentence>` on failure. No summaries, no file lists.
+- **Supervisor** (your interactive Claude session) — only sees small JSON blobs from CLI subcommands. The supervisor never reads `codex-review.md`, `claude-result.md`, full diffs, or test logs. Round memos (used as carry-forward into the next round's prompt) are auto-composed by `review-round` from Codex's structured review markdown — the supervisor just calls the subcommand.
+
+This keeps the supervisor's per-turn token cost roughly constant regardless of how large the artifacts are or how many rounds you run.
+
+### Per-round flow
+
+For each round N, the supervisor runs (in order):
+
+1. `plan-round` — Codex drafts `rounds/NN/claude-prompt.md`
+2. `capture-baseline` — record HEAD sha
+3. **Dispatch worker subagent** via Task tool — worker reads the prompt, implements, runs `record-diff` + `mark-worker-done`, replies `OK` / `FAIL`
+4. `review-round` — Codex reviews the diff + result; auto-parses Goal Alignment / Risks / Carry-Forward sections; appends the round memo to `memo.md`; transitions phase through `reviewed → memo_written → completed` in a single call
+5. Branch on `decision`:
+   - `APPROVE` → `finalize`, point user at `final-report.md`
+   - `STOP_FOR_USER` → pause, surface `safety_flags`
+   - `NEEDS_CHANGES` → loop back to step 1
+
+`append-memo` is a manual override and is no longer part of the normal flow.
+
 ## Status
 
 v2 — Claude-entry architecture. The supervisor is Claude; Codex is invoked as a subprocess for planning + review. Both run on subscription (Pro/Max for Claude; ChatGPT Plus for Codex headless).
+
+Recent: per-round memos are now auto-composed by `review-round` (no supervisor reads of review artifacts), and worker replies are constrained to one line — both changes hold supervisor token usage flat across long runs.

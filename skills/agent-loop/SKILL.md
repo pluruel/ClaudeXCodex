@@ -41,9 +41,9 @@ This plugin ships schema docs at `${CLAUDE_PLUGIN_ROOT}/skills/references/` for 
 
 ## Context discipline (mandatory)
 
-- You never read full diffs, test logs, claude-result.md, claude-prompt.md, or codex-review.md.
+- You never read full diffs, test logs, claude-result.md, claude-prompt.md, or codex-review.md. Not even "one quick pass." The memo is auto-composed by `review-round`; you have no reason to open the review file.
 - You only ingest the small JSON each CLI subcommand emits.
-- For details, you can run the CLI's `inspect` subcommand with narrow `--lines` to extract a slice.
+- For details, you can run the CLI's `inspect` subcommand with narrow `--lines` to extract a slice — but only when JSON is genuinely insufficient (rare).
 - You never call `codex exec` or `codex` directly — always via the CLI's `plan-init|plan-round|review-round` subcommands.
 
 ## On start (`/agent-loop <goal text>`)
@@ -82,17 +82,19 @@ For each round N (starting at 1):
        - Run: `"${CLAUDE_PLUGIN_ROOT}/bin/agent-loop" mark-worker-done --run <run_id> --round N`
        - Forbidden: git commit, git push, rm -rf, sudo, db migrations,
          writes to .env / secrets / migrations.
-       - Reply to the supervisor with ONE concise paragraph summarizing
-         what changed (file count + brief outcome). Do NOT paste the full
-         result.md or diff into your reply.
+       - Reply to the supervisor with EXACTLY ONE LINE:
+           OK
+         on success, or
+           FAIL: <one sentence>
+         on failure. Nothing else. No summary, no file list, no rationale.
+         The supervisor reads state.json and review JSON for everything else.
    ```
 
 4. After Task tool returns, run: `Bash: "${CLAUDE_PLUGIN_ROOT}/bin/agent-loop" review-round --run <run_id> --round N`
-   → JSON `{decision, review_path, safety_flags}`. Decision is one of APPROVE / NEEDS_CHANGES / STOP_FOR_USER.
-5. `Bash: "${CLAUDE_PLUGIN_ROOT}/bin/agent-loop" append-memo --run <run_id> --round N --memo-file <path>` — supply a 5-10 line memo derived from the codex-review.md (you may briefly read codex-review.md if needed, but prefer using just the JSON decision and your own brief notes; remember context discipline).
-6. Branch on `decision`:
+   → JSON `{decision, review_path, safety_flags, memo_appended, memo_path}`. Decision is one of APPROVE / NEEDS_CHANGES / STOP_FOR_USER. `review-round` automatically parses the Codex review and appends the round memo to `memo.md`; do not call `append-memo` yourself.
+5. Branch on `decision`:
    - `APPROVE` → `Bash: "${CLAUDE_PLUGIN_ROOT}/bin/agent-loop" finalize --run <run_id>`. Tell the user the run completed; point them at `final-report.md`. END.
-   - `STOP_FOR_USER` → Tell the user the loop paused; show `safety_flags` and point at `codex-review.md`. END.
+   - `STOP_FOR_USER` → Tell the user the loop paused; show `safety_flags` and point at `codex-review.md` (for the human, not for you). END.
    - `NEEDS_CHANGES` → Loop back to step 1 (next round).
 
 ## On continue (`/agent-loop` or `/agent-loop continue`)
@@ -102,7 +104,9 @@ For each round N (starting at 1):
 2. Interpret `action`:
    - `plan_round` → start a fresh round at step 1 of the round loop
    - `claude_completed` (worker done but no review yet) → go straight to step 4 (review-round)
-   - `reviewed` → step 5 (append-memo) and then branch
+   - `write_review` → same as `claude_completed`: run review-round (also re-composes memo if missing)
+   - `write_memo` → review-round was interrupted before memo append. Re-run review-round; it will re-invoke Codex and re-append the memo idempotently.
+   - `branch_decision` → review and memo are done; go straight to step 5 (decision branch)
    - `user_confirm` → tell the user the options and wait
 
 ## Forbidden actions

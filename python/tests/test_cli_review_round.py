@@ -54,4 +54,11 @@ def test_review_round_emits_decision(tmp_repo: Path, codex_stub) -> None:
 
     state2 = json.loads(state_p.read_text(encoding="utf-8"))
     assert state2["rounds"][-1]["decision"] == "APPROVE"
-    assert state2["rounds"][-1]["phase"] == "reviewed"
+    # review-round now auto-composes and appends the round memo, advancing
+    # phase all the way through reviewed -> memo_written -> completed.
+    assert state2["rounds"][-1]["phase"] == "completed"
+    assert js["memo_appended"] is True
+    memo_text = (tmp_repo / ".agent-loop" / "runs" / run_id / "memo.md").read_text(
+        encoding="utf-8"
+    )
+    assert "## Round 1 - APPROVE" in memo_text

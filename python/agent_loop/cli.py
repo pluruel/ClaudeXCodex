@@ -282,6 +282,73 @@ Keep Required Reading to <= 4 paths. Out of Scope must cover unrelated top-level
     return 0
 
 
+def _parse_review_fields(review_md: str) -> dict:
+    """Extract memo-relevant sections from Codex review markdown."""
+    import re as _re
+    def section(name: str) -> str:
+        m = _re.search(
+            rf"^##\s+{_re.escape(name)}\s*\n(.*?)(?=^##\s+|\Z)",
+            review_md, _re.MULTILINE | _re.DOTALL,
+        )
+        return m.group(1).strip() if m else ""
+
+    def bullets(text: str, cap: int = 3) -> list[str]:
+        import re as _re2
+        out = []
+        for line in text.splitlines():
+            s = line.strip()
+            if s.startswith(("-", "*")):
+                out.append(_re2.sub(r"^[-*]\s*", "", s).strip())
+        return [b for b in out if b][:cap]
+
+    goal = section("Goal Alignment")
+    goal_line = " ".join(goal.split())[:200] if goal else ""
+    return {
+        "goal_progress": goal_line,
+        "top_risks": bullets(section("Risks")),
+        "carry_forward": bullets(section("Carry-Forward For Next Round")),
+    }
+
+
+def _compose_memo_block(round_n: int, decision: str, fields: dict,
+                       stats, safety_flags: list) -> str:
+    """Build the 5-10 line memo block per round-memo.md schema."""
+    def join_bullets(items: list[str], empty: str) -> str:
+        return "; ".join(items) if items else empty
+    sensitive = (
+        "yes -- diff touched sensitive paths"
+        if "diff_has_sensitive" in safety_flags else "none"
+    )
+    diff_size = (
+        f"files={stats.files_changed}, "
+        f"+{stats.insertions}/-{stats.deletions}"
+    )
+    return "\n".join([
+        f"## Round {round_n} - {decision}",
+        f"- Goal progress: {fields['goal_progress'] or '(unspecified)'}",
+        f"- Top risks: {join_bullets(fields['top_risks'], '(none flagged)')}",
+        f"- Carry forward: {join_bullets(fields['carry_forward'], '(none)')}",
+        f"- Sensitive: {sensitive}",
+        f"- Diff size: {diff_size}",
+        "",
+    ])
+
+
+def _append_memo_idempotent(memo_path: _Path, round_n: int, block: str) -> bool:
+    """Append memo block unless this round already appears in memo.md.
+
+    Returns True if appended, False if skipped (already present).
+    """
+    import re as _re
+    existing = memo_path.read_text(encoding="utf-8") if memo_path.exists() else ""
+    if _re.search(rf"^##\s+Round\s+{round_n}\s+-\s+",
+                  existing, _re.MULTILINE):
+        return False
+    with memo_path.open("a", encoding="utf-8") as f:
+        f.write("\n" + block.strip() + "\n")
+    return True
+
+
 @register("review-round")
 def _cmd_review_round(args) -> int:
     import re
@@ -412,11 +479,28 @@ Decision rules:
     rs.set_round_phase(args.round, "reviewed")
     rs.save(run_dir / "state.json")
 
+    memo_fields = _parse_review_fields(res.final_text)
+    memo_block = _compose_memo_block(
+        round_n=args.round,
+        decision=decision,
+        fields=memo_fields,
+        stats=stats,
+        safety_flags=safety_flags,
+    )
+    memo_path = run_dir / "memo.md"
+    appended = _append_memo_idempotent(memo_path, args.round, memo_block)
+    rs.set_round_phase(args.round, "memo_written")
+    rs.set_round_phase(args.round, "completed")
+    rs._round(args.round).ended_at = _dt.datetime.utcnow().isoformat()
+    rs.save(run_dir / "state.json")
+
     _emit({
         "decision": decision,
         "review_path": str(rd / "codex-review.md"),
         "round": args.round,
         "safety_flags": safety_flags,
+        "memo_appended": appended,
+        "memo_path": str(memo_path),
     })
     return 0
 

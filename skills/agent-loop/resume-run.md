@@ -21,10 +21,10 @@ Output JSON: `{action, notes, options, run_id, current_round}`.
 |---|---|
 | `plan_round` | Start a fresh round at SKILL.md round-loop step 1. |
 | `dispatch` | Phase machine still says `init`. Re-dispatch the worker subagent (round dir + prompt are on disk). |
-| `advance_to_review` | Worker finished but no review yet. Jump straight to `"${CLAUDE_PLUGIN_ROOT}/bin/agent-loop" review-round`. |
+| `advance_to_review` | Worker finished but no review yet. Jump straight to `"${CLAUDE_PLUGIN_ROOT}/bin/agent-loop" review-round` (which also auto-appends the memo). |
 | `write_review` | Same as `advance_to_review`. |
-| `write_memo` | Review is on disk but memo not appended. Compose memo, call `"${CLAUDE_PLUGIN_ROOT}/bin/agent-loop" append-memo`. |
-| `branch_decision` | Decision recorded, just branch (APPROVE / STOP_FOR_USER / NEEDS_CHANGES). |
+| `write_memo` | `review-round` was interrupted after writing `codex-review.md` but before appending the memo. Re-run `review-round`; the memo append is idempotent. Do NOT call `append-memo` manually. |
+| `branch_decision` | Review and memo are done, just branch (APPROVE / STOP_FOR_USER / NEEDS_CHANGES). |
 | `finalize` | Call `"${CLAUDE_PLUGIN_ROOT}/bin/agent-loop" finalize`. |
 | `user_confirm` | Show options to the user; act on their choice. |
 

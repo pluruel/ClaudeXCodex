@@ -1,41 +1,43 @@
 ---
 name: round-memo
-description: Format for the 5-10 line memo the supervisor appends after each round via the `append-memo` subcommand.
+description: Schema reference for the per-round memo that `review-round` auto-appends to memo.md. Supervisor does NOT compose this manually.
 ---
 
 # round-memo
 
-> CLI is invoked through the plugin wrapper. Use `"${CLAUDE_PLUGIN_ROOT}/bin/agent-loop"` exactly; do not call `agent-loop` via `PATH`.
+> The supervisor does not write memos. `review-round` parses Codex's review markdown and appends the memo block automatically. This document exists so you understand what's being written on your behalf, not as a workflow you execute.
 
-After `review-round` returns its decision, the supervisor writes a short memo and appends via `append-memo --memo-file <tmp>`.
+## Auto-memo flow
 
-## Format (hard limits, total <= 10 lines)
+`review-round` does, in order:
+
+1. Invokes Codex to produce `codex-review.md`.
+2. Parses these sections from that file:
+   - `## Goal Alignment` → `Goal progress` line
+   - `## Risks` bullets (up to 3) → `Top risks`
+   - `## Carry-Forward For Next Round` bullets (up to 3) → `Carry forward`
+3. Derives `Sensitive` from `safety_flags` (yes if `diff_has_sensitive`, else none).
+4. Derives `Diff size` from `diff-stats.json` (`files=N, +X/-Y`).
+5. Composes the block below and appends to `<run_dir>/memo.md` idempotently (skips append if a `## Round N -` heading for the same round is already present).
+6. Advances state to `memo_written` → `completed`.
+
+The next round's `plan-round` reads `memo.md` and folds the latest `Carry forward` bullets into the new claude-prompt verbatim.
+
+## Schema (auto-written; for your reference)
 
 ```text
 ## Round N - <DECISION>
 - Goal progress: <single line>
-- Top risks: <up to 3 short bullets>
-- Carry forward: <up to 3 short bullets, will be in next round's prompt>
-- Sensitive: <"none" or one line>
+- Top risks: <up to 3 items, joined by "; ">
+- Carry forward: <up to 3 items, joined by "; ">
+- Sensitive: <"none" or "yes -- diff touched sensitive paths">
 - Diff size: <files=N, +X/-Y>
 ```
 
-## Where to get the content
+## When NOT to call `append-memo` manually
 
-- Decision: from `review-round` JSON (`decision` key).
-- Goal progress / risks / carry forward: you may read `codex-review.md` for ONE quick pass if needed. Avoid re-reading it later; the memo is your compressed handoff.
-- Diff size: from the review-round JSON (`safety_flags` mentions size flags; you can also get exact numbers from `status` if needed).
+Never, in the normal flow. `append-memo` remains in the CLI for manual override (e.g., editing a memo for an old run by hand), but the supervisor's SKILL.md does not invoke it.
 
-## Rules
+## Crash recovery
 
-- <= 10 lines. <= 80 chars per bullet.
-- "Carry forward" matters most: those bullets get quoted verbatim into the next prompt by `plan-round`.
-- Do not quote findings verbatim; compress.
-
-## Save destination
-
-Write to a temp file (e.g., `<run_dir>/.tmp-memo.md`), then:
-
-`Bash: "${CLAUDE_PLUGIN_ROOT}/bin/agent-loop" append-memo --run <run_id> --round N --memo-file <tmp_path>`
-
-Delete the temp file after success.
+If `review-round` was interrupted after writing `codex-review.md` but before the memo append, re-run `review-round` for the same round. It will re-invoke Codex, but the idempotent append guarantees memo.md does not get duplicated.
