@@ -1,6 +1,6 @@
 ---
 name: agent-loop
-description: When the user types `/agent-loop "<goal>"` (start a new run) or `/agent-loop` with no goal (resume an interrupted run), this skill turns the current Claude session into the supervisor of a bounded review loop. Codex CLI (headless `codex exec --json`) does planning and review; Claude subagents (Task tool) do implementation; the supervisor (this Claude session) only reads tiny status JSON. Artifacts in `.agent-loop/runs/<id>/`.
+description: When the user types `/agent-loop <goal>` (start a new run; quotes around the goal are optional) or `/agent-loop` with no text (resume an interrupted run), this skill turns the current Claude session into the supervisor of a bounded review loop. Codex CLI (headless `codex exec --json`) does planning and review; Claude subagents (Task tool) do implementation; the supervisor (this Claude session) only reads tiny status JSON. Artifacts in `.agent-loop/runs/<id>/`.
 ---
 
 # agent-loop — Claude Supervisor Skill
@@ -9,11 +9,11 @@ You are the supervisor of a bounded review loop. Your context must stay lean. Th
 
 ## Invocation grammar
 
-- `/agent-loop "<goal>"` — start a new run with the given goal.
-- `/agent-loop` (no quoted arg) — resume the most recently active run (equivalent to the old `/agent-loop continue`).
-- `/agent-loop continue` — explicit form of resume; also accepted.
+- `/agent-loop <goal text>` — start a new run. Everything after `/agent-loop ` is the goal. Quotes are NOT required, e.g. `/agent-loop fix the login bug`. If the user did quote it (`/agent-loop "fix the login bug"`), strip the outer quotes before passing along.
+- `/agent-loop` (no text after) — resume the most recently active run.
+- `/agent-loop continue` — explicit resume form; also accepted.
 
-Pick the right path based on what the user typed. If they passed a goal in quotes, follow "On start" below. Otherwise follow "On continue".
+Decision rule: if the message after `/agent-loop` is empty or is exactly the word `continue`, treat as resume. Otherwise treat the whole remainder as the goal and follow "On start" below.
 
 ## CLI invocation convention
 
@@ -55,7 +55,7 @@ This plugin ships schema docs at `${CLAUDE_PLUGIN_ROOT}/skills/references/` for 
 - For details, you can run the CLI's `inspect` subcommand with narrow `--lines` to extract a slice.
 - You never call `codex exec` or `codex` directly — always via the CLI's `plan-init|plan-round|review-round` subcommands.
 
-## On start (`/agent-loop "<goal>"`)
+## On start (`/agent-loop <goal text>`)
 
 1. `Bash: python "${CLAUDE_PLUGIN_ROOT}/python/agent_loop/__main__.py" init-run --goal "<goal>" --slug "<short-slug>"`
    → JSON `{run_id, run_dir}`. Remember `run_id`.

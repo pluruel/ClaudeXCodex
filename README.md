@@ -91,7 +91,7 @@ In your target repo:
 
 ```
 $ claude
-> /agent-loop "<your goal>"
+> /agent-loop <your goal here, quotes optional>
 ```
 
 The supervisor (this Claude session) will then call `codex exec` for planning/review and dispatch worker subagents (Task tool) for implementation. All artifacts in `.agent-loop/runs/<id>/`.
