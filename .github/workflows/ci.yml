@@ -1,0 +1,84 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+    tags: ["v*"]
+  pull_request:
+    branches: [main]
+
+jobs:
+  test:
+    name: Python tests
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.11", "3.12"]
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python ${{ matrix.python-version }}
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+
+      - name: Set up venv and install
+        working-directory: python
+        run: |
+          python -m venv .venv
+          .venv/bin/pip install -U pip
+          .venv/bin/pip install -e ".[dev]"
+
+      - name: Run pytest
+        working-directory: python
+        run: |
+          export PATH="$PWD/.venv/bin:$PATH"
+          pytest -q
+
+  validate-plugin:
+    name: Validate Codex plugin layout
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Check required files exist
+        run: |
+          test -f .codex-plugin/plugin.json
+          test -f skills/agent-loop/SKILL.md
+          test -d skills/references
+          test -f config/defaults.toml
+          echo "Plugin layout OK"
+
+      - name: Validate plugin.json is JSON
+        run: |
+          python -c "import json; json.load(open('.codex-plugin/plugin.json'))"
+
+      - name: List skill files
+        run: find skills -name '*.md' | sort
+
+  release:
+    name: Build release artifact
+    needs: [test, validate-plugin]
+    if: startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Create tarball
+        run: |
+          mkdir -p dist
+          tar --exclude='.git' --exclude='.venv' --exclude='__pycache__' \
+              --exclude='*.egg-info' --exclude='.agent-loop' --exclude='.pytest_cache' \
+              --exclude='dist' \
+              -czf dist/agent-loop-${{ github.ref_name }}.tar.gz \
+              .codex-plugin skills config python docs README.md
+
+      - name: Upload to GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: dist/agent-loop-*.tar.gz
+          generate_release_notes: true
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
