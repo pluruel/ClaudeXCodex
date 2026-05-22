@@ -278,5 +278,126 @@ def _cmd_append_memo(args) -> int:
     return 0
 
 
+@register("continue")
+def _cmd_continue(args) -> int:
+    from agent_loop.resume import determine_resume_action, find_active_run
+    repo = _Path(args.repo).resolve()
+    if args.run:
+        run_dir = _run_dir(repo, args.run)
+    else:
+        run_dir = find_active_run(repo)
+        if run_dir is None:
+            print("no active run", file=sys.stderr)
+            return 1
+    rs = RunState.load(run_dir / "state.json")
+    plan = determine_resume_action(rs, run_dir=run_dir)
+    _emit({
+        "action": plan.action,
+        "notes": plan.notes,
+        "options": plan.options,
+        "run_id": rs.run_id,
+        "current_round": rs.current_round,
+    })
+    return 0
+
+
+@register("dispatch")
+def _cmd_dispatch(args) -> int:
+    """Run the Claude SDK session for the current round and persist payload."""
+    import asyncio
+    import tomllib
+
+    from agent_loop.diff_capture import capture_baseline, capture_diff, compute_stats
+    from agent_loop.payload import build_review_payload
+    from agent_loop.result_parser import parse_result
+    from agent_loop.safety import SafetyConfig, classify_diff_size
+    from agent_loop.sdk_runner import RunnerConfig, run_round
+    from agent_loop.shared_io import SharedDelta, snapshot_sizes, extract_delta
+
+    repo = _Path(args.repo).resolve()
+    run_dir = _run_dir(repo, args.run)
+    rs = RunState.load(run_dir / "state.json")
+    round_n = args.round
+    rd = run_dir / "rounds" / f"{round_n:02d}"
+    prompt_text = (rd / "claude-prompt.md").read_text()
+
+    cfg_path = repo / ".agent-loop" / "config.toml"
+    if not cfg_path.exists():
+        # fall back to packaged defaults
+        cfg_path = _Path(__file__).resolve().parents[2] / "agent-loop" / "config" / "defaults.toml"
+    safety_cfg_data = tomllib.loads(cfg_path.read_text()) if cfg_path.exists() else {}
+    safety = SafetyConfig(
+        bash_block_patterns=safety_cfg_data.get("safety", {}).get("bash_block", {}).get("patterns", []),
+        sensitive_path_patterns=safety_cfg_data.get("safety", {}).get("sensitive_paths", {}).get("patterns", []),
+        diff_warn_files=safety_cfg_data.get("safety", {}).get("diff_size", {}).get("warn_files", 15),
+        diff_warn_lines=safety_cfg_data.get("safety", {}).get("diff_size", {}).get("warn_lines", 600),
+    )
+
+    shared_dir = run_dir / "shared"
+    before = snapshot_sizes(shared_dir)
+
+    baseline = capture_baseline(repo)
+
+    runner_cfg = RunnerConfig(
+        target_repo=repo,
+        prompt_text=prompt_text,
+        worker_system_prompt="You are the agent-loop worker.",
+        round_dir=rd,
+        plugins={},
+        safety=safety,
+    )
+    rs.set_round_phase(round_n, "dispatched")
+    rs.touch_heartbeat(_dt.datetime.utcnow().isoformat())
+    rs.save(run_dir / "state.json")
+
+    asyncio.run(run_round(runner_cfg))
+
+    rs.set_round_phase(round_n, "claude_completed")
+    rs.save(run_dir / "state.json")
+
+    diff = capture_diff(repo, baseline)
+    (rd / "diff.patch").write_text(diff)
+    stats = compute_stats(diff, sensitive_patterns=safety.sensitive_path_patterns)
+    (rd / "diff-stats.json").write_text(_json.dumps(stats.__dict__, indent=2))
+
+    safety_flags: list[str] = list(stats.sensitive_hits and ["diff_has_sensitive"] or [])
+    safety_flags += classify_diff_size(files=stats.files_changed, lines=stats.insertions + stats.deletions, cfg=safety)
+
+    result_path = rd / "claude-result.md"
+    result = parse_result(result_path) if result_path.exists() else None
+    if result is None:
+        from agent_loop.result_parser import ClaudeResult
+        result = ClaudeResult(summary="(no claude-result.md found)")
+        safety_flags.append("missing_claude_result")
+
+    delta = extract_delta(shared_dir, before)
+    goal_summary = (run_dir / "goal.md").read_text().strip().splitlines()[0]
+    payload = build_review_payload(
+        out_path=rd / "review-payload.json",
+        round_n=round_n,
+        goal_summary=goal_summary,
+        result=result,
+        stats=stats,
+        shared_delta=delta,
+        artifact_paths={
+            "result": str(result_path.relative_to(repo)) if result_path.exists() else "",
+            "diff": str((rd / "diff.patch").relative_to(repo)),
+            "test_log": str((rd / "test-log.txt").relative_to(repo)) if (rd / "test-log.txt").exists() else "",
+            "messages": str((rd / "claude-messages.jsonl").relative_to(repo)),
+        },
+        safety_flags=safety_flags,
+    )
+
+    _emit({
+        "round": round_n,
+        "result_summary": payload["result_summary"],
+        "diff_summary": payload["diff_summary"],
+        "safety_flags": payload["safety_flags"],
+        "artifact_paths": payload["artifact_paths"],
+        "shared_delta": payload["shared_delta"],
+    })
+    return 0
+
+
 if __name__ == "__main__":
     sys.exit(main())
