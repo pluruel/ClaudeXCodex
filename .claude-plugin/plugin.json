@@ -3,7 +3,10 @@
   "displayName": "Agent Loop",
   "version": "0.2.0",
   "description": "Claude-supervised review loop with Codex (subscription-headless) as planner/reviewer and Claude subagents as workers",
-  "author": "Junnoh Lee",
+  "author": {
+    "name": "Junnoh Lee",
+    "url": "https://github.com/pluruel"
+  },
   "license": "MIT",
   "homepage": "https://github.com/pluruel/ClaudeXCodex",
   "repository": "https://github.com/pluruel/ClaudeXCodex.git",
