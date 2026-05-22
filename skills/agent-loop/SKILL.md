@@ -7,6 +7,22 @@ description: When the user types `/agent-loop start "<goal>"` (or `/agent-loop c
 
 You are the supervisor of a bounded review loop. Your context must stay lean. The heavy thinking lives in Codex subprocess calls and in worker subagents; you only see filenames and tiny status JSON.
 
+## Preflight — verify dependencies BEFORE the first Bash call
+
+The `agent-loop` CLI is NOT bundled inside this plugin. It lives in a separate Python package the user installs with `pip install -e python/`. Verify it's reachable from this session before doing anything else:
+
+1. `Bash: agent-loop --help` (or `agent-loop status`). Expected: a non-zero usage banner.
+2. If you get `command not found`: STOP. Tell the user to install the Python core:
+   ```bash
+   cd <repo>/python && python -m venv .venv && .venv/bin/pip install -e ".[dev]"
+   export PATH="$PWD/.venv/bin:$PATH"
+   ```
+   On Windows PowerShell use `.\.venv\Scripts\Activate.ps1`. Then ask them to restart this session so the new PATH is picked up.
+3. Do NOT go hunting for an `agent-loop` binary inside `~/.claude/plugins/...` — the plugin cache contains only markdown skills, never executables.
+4. Also verify Codex CLI: `Bash: codex --version`. If missing, tell the user to install Codex CLI and run `codex login`.
+
+Skip this preflight only if you've already verified both CLIs earlier in the same session.
+
 ## Required reading on first invocation per session
 
 - `references/claude-prompt-template.md` — what Codex drafts for each round
