@@ -1,11 +1,19 @@
 ---
 name: agent-loop
-description: When the user types `/agent-loop start "<goal>"` (or `/agent-loop continue`), this skill turns the current Claude session into the supervisor of a bounded review loop. Codex CLI (headless `codex exec --json`) does planning and review; Claude subagents (Task tool) do implementation; the supervisor (this Claude session) only reads tiny status JSON. Artifacts in `.agent-loop/runs/<id>/`.
+description: When the user types `/agent-loop "<goal>"` (start a new run) or `/agent-loop` with no goal (resume an interrupted run), this skill turns the current Claude session into the supervisor of a bounded review loop. Codex CLI (headless `codex exec --json`) does planning and review; Claude subagents (Task tool) do implementation; the supervisor (this Claude session) only reads tiny status JSON. Artifacts in `.agent-loop/runs/<id>/`.
 ---
 
 # agent-loop — Claude Supervisor Skill
 
 You are the supervisor of a bounded review loop. Your context must stay lean. The heavy thinking lives in Codex subprocess calls and in worker subagents; you only see filenames and tiny status JSON.
+
+## Invocation grammar
+
+- `/agent-loop "<goal>"` — start a new run with the given goal.
+- `/agent-loop` (no quoted arg) — resume the most recently active run (equivalent to the old `/agent-loop continue`).
+- `/agent-loop continue` — explicit form of resume; also accepted.
+
+Pick the right path based on what the user typed. If they passed a goal in quotes, follow "On start" below. Otherwise follow "On continue".
 
 ## CLI invocation convention
 
@@ -36,13 +44,9 @@ Power-user shortcut: if the user has manually run `pip install -e python/` and a
 
 Skip this preflight only if you've already verified both deps earlier in the same session.
 
-## Required reading on first invocation per session
+## Internal schemas (do NOT read)
 
-- `references/claude-prompt-template.md` — what Codex drafts for each round
-- `references/claude-result-schema.md` — what the worker writes back
-- `references/review-payload-schema.md` — what Codex sees when reviewing
-
-You do NOT need to re-read these every invocation; trust the schemas.
+This plugin ships schema docs at `${CLAUDE_PLUGIN_ROOT}/skills/references/` for the curious. **The supervisor does not need to read them** — the CLI takes care of all schema generation/validation. Read them only if you're debugging unexpected JSON output from a subcommand.
 
 ## Context discipline (mandatory)
 
@@ -51,7 +55,7 @@ You do NOT need to re-read these every invocation; trust the schemas.
 - For details, you can run the CLI's `inspect` subcommand with narrow `--lines` to extract a slice.
 - You never call `codex exec` or `codex` directly — always via the CLI's `plan-init|plan-round|review-round` subcommands.
 
-## Loop protocol — On `start "<goal>"`
+## On start (`/agent-loop "<goal>"`)
 
 1. `Bash: python "${CLAUDE_PLUGIN_ROOT}/python/agent_loop/__main__.py" init-run --goal "<goal>" --slug "<short-slug>"`
    → JSON `{run_id, run_dir}`. Remember `run_id`.
@@ -100,7 +104,7 @@ For each round N (starting at 1):
    - `STOP_FOR_USER` → Tell the user the loop paused; show `safety_flags` and point at `codex-review.md`. END.
    - `NEEDS_CHANGES` → Loop back to step 1 (next round).
 
-## Loop protocol — On `continue`
+## On continue (`/agent-loop` or `/agent-loop continue`)
 
 1. `Bash: python "${CLAUDE_PLUGIN_ROOT}/python/agent_loop/__main__.py" continue` (optionally `--run <id>`)
    → JSON `{action, notes, options, run_id, current_round}`.

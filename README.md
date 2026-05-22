@@ -91,15 +91,15 @@ In your target repo:
 
 ```
 $ claude
-> /agent-loop start "<your goal>"
+> /agent-loop "<your goal>"
 ```
 
 The supervisor (this Claude session) will then call `codex exec` for planning/review and dispatch worker subagents (Task tool) for implementation. All artifacts in `.agent-loop/runs/<id>/`.
 
-Resume after interruption:
+Resume after interruption (no goal arg → resume most recent run):
 
 ```
-> /agent-loop continue
+> /agent-loop
 ```
 
 ## Status
