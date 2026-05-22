@@ -15,7 +15,7 @@ All test and dev commands assume the project's `.venv`. Do not install into a sy
 
 ## CLI invocation
 
-The CLI is always invoked through Python — there is no shell wrapper used at runtime:
+The CLI is always invoked through Python — `pyproject.toml` deliberately defines **no** `[project.scripts]` entry point, so `pip install` never creates an `agent-loop` shell wrapper on PATH:
 
 ```bash
 python -m agent_loop --help
@@ -23,7 +23,7 @@ python -m agent_loop --help
 python "${CLAUDE_PLUGIN_ROOT}/python/agent_loop/__main__.py" --help
 ```
 
-The editable install does create an `agent-loop` entry-point script as a convenience for ad-hoc local use, but the plugin's skill files and the test suite both invoke the module via `python -m agent_loop` so behavior is identical regardless of PATH state.
+The skill files and the test suite both invoke the module via `python -m agent_loop`, so behavior is identical regardless of install state or platform.
 
 ## Module map
 

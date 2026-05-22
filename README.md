@@ -9,7 +9,7 @@ See `docs/superpowers/plans/2026-05-22-claude-entry-pivot.md` for the architectu
 - `.claude-plugin/plugin.json` — Claude Code plugin manifest
 - `skills/` — plugin skills (`agent-loop/`, `references/`)
 - `config/` — packaged plugin defaults (e.g. `defaults.toml`)
-- `python/` — Python core (`agent-loop` CLI, codex subprocess wrapper, state, safety)
+- `python/` — Python core (`python -m agent_loop` CLI, codex subprocess wrapper, state, safety)
 - `docs/superpowers/` — spec and implementation plans
 
 ## Install
@@ -62,7 +62,7 @@ Any edits in your working tree are picked up on the next `/plugin install` or `/
 
 ### Python runtime (only requirement)
 
-You just need Python 3.11+ on PATH. The CLI ships **inside the plugin** as a plain Python module; the skill invokes it via `python "${CLAUDE_PLUGIN_ROOT}/python/agent_loop/__main__.py"` — no `pip install`, no PATH manipulation, no separate clone. There is no standalone `agent-loop` binary in the runtime path; everything goes through Python.
+You just need Python 3.11+ on PATH. The CLI ships **inside the plugin** as a plain Python module; the skill invokes it via `python "${CLAUDE_PLUGIN_ROOT}/python/agent_loop/__main__.py"` — no `pip install`, no PATH manipulation, no separate clone. There is **no** `agent-loop` shell binary at any layer of this project; every invocation goes through `python` / `python -m agent_loop`.
 
 (If you ARE working on the code locally and want to run the test suite, the optional dev install is:
 
@@ -70,13 +70,13 @@ You just need Python 3.11+ on PATH. The CLI ships **inside the plugin** as a pla
 git clone https://github.com/pluruel/ClaudeXCodex.git
 cd ClaudeXCodex/python
 python -m venv .venv
-.venv/bin/pip install -e ".[dev]"           # Linux/Mac
-.\.venv\Scripts\pip.exe install -e ".[dev]" # Windows
-.venv/bin/pytest -q                          # Linux/Mac
-.\.venv\Scripts\pytest.exe -q                # Windows
+.venv/bin/pip install -e ".[dev]"            # Linux/Mac
+.\.venv\Scripts\pip.exe install -e ".[dev]"  # Windows
+.venv/bin/pytest -q                           # Linux/Mac
+.\.venv\Scripts\pytest.exe -q                 # Windows
 ```
 
-Tests invoke the CLI as `python -m agent_loop ...`, which works as long as the package is importable. The editable install above is the simplest way to satisfy that. An `agent-loop` entry-point script is also created by the install, but the plugin runtime never relies on it.)
+The editable install just registers the `agent_loop` package on the venv's `sys.path` — `pip install` does NOT create an `agent-loop` entry-point script anymore. Tests invoke `python -m agent_loop ...` directly.)
 
 ### Authentication (both subscription-based; no API keys needed)
 

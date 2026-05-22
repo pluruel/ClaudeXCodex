@@ -1,12 +1,12 @@
 """Enable invocation without pip install.
 
-Supports three call styles:
+Supports two call styles — there is no ``agent-loop`` shell entry point any
+more, on purpose:
 
-1.  ``python -m agent_loop ...``        (when the package is pip-installed)
+1.  ``python -m agent_loop ...``        (when the package is importable)
 2.  ``python <repo>/python/agent_loop/__main__.py ...``  (no install — uses
     ``${CLAUDE_PLUGIN_ROOT}/python/agent_loop/__main__.py`` from the Claude
     Code plugin install)
-3.  ``agent-loop ...``                  (entry-point script, requires PATH)
 
 For style 2 we have to add the package's parent dir to ``sys.path`` before the
 package imports anything from itself.

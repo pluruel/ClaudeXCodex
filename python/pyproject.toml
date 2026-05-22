@@ -16,8 +16,9 @@ dev = [
   "pytest-asyncio>=0.23",
 ]
 
-[project.scripts]
-agent-loop = "agent_loop.cli:main"
+# No [project.scripts] entry-point on purpose: the plugin invokes the CLI as
+# `python -m agent_loop` (or via the bundled `${CLAUDE_PLUGIN_ROOT}/python/agent_loop/__main__.py`)
+# so a `pip install` never plants an `agent-loop` shell script on PATH.
 
 [tool.setuptools.packages.find]
 where = ["."]

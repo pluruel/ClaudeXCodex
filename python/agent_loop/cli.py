@@ -13,7 +13,7 @@ def _add_common(p: argparse.ArgumentParser) -> None:
 
 
 def build_parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(prog="agent-loop")
+    parser = argparse.ArgumentParser(prog="python -m agent_loop")
     sub = parser.add_subparsers(dest="cmd", required=True)
 
     # init-run
