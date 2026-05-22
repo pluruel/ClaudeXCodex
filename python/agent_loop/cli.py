@@ -32,6 +32,12 @@ def build_parser() -> argparse.ArgumentParser:
     _add_common(p)
     p.add_argument("--run", required=True)
 
+    # review-round
+    p = sub.add_parser("review-round", help="ask Codex to review a finished round")
+    _add_common(p)
+    p.add_argument("--run", required=True)
+    p.add_argument("--round", type=int, required=True)
+
     # init-round
     p = sub.add_parser("init-round", help="render prompt + create round dir")
     _add_common(p)
@@ -255,6 +261,145 @@ Keep Required Reading to <= 4 paths. Out of Scope must cover unrelated top-level
         "round_n": next_n,
         "prompt_path": str(rd / "claude-prompt.md"),
         "summary": f"round {next_n} prompt drafted",
+    })
+    return 0
+
+
+@register("review-round")
+def _cmd_review_round(args) -> int:
+    import re
+    import tomllib
+    from agent_loop.codex_client import call_codex, CodexCallError
+    from agent_loop.diff_capture import compute_stats
+    from agent_loop.payload import build_review_payload
+    from agent_loop.result_parser import parse_result, ClaudeResult
+    from agent_loop.safety import SafetyConfig, classify_diff_size
+    from agent_loop.shared_io import SharedDelta
+
+    repo = _Path(args.repo).resolve()
+    run_dir = _run_dir(repo, args.run)
+    rd = run_dir / "rounds" / f"{args.round:02d}"
+
+    cfg_path = repo / ".agent-loop" / "config.toml"
+    if not cfg_path.exists():
+        cfg_path = _Path(__file__).resolve().parents[2] / "config" / "defaults.toml"
+    safety_cfg_data = tomllib.loads(cfg_path.read_text(encoding="utf-8")) if cfg_path.exists() else {}
+    safety = SafetyConfig(
+        bash_block_patterns=safety_cfg_data.get("safety", {}).get("bash_block", {}).get("patterns", []),
+        sensitive_path_patterns=safety_cfg_data.get("safety", {}).get("sensitive_paths", {}).get("patterns", []),
+        diff_warn_files=safety_cfg_data.get("safety", {}).get("diff_size", {}).get("warn_files", 15),
+        diff_warn_lines=safety_cfg_data.get("safety", {}).get("diff_size", {}).get("warn_lines", 600),
+    )
+
+    diff_path = rd / "diff.patch"
+    if not diff_path.exists():
+        diff_path.write_text("", encoding="utf-8")
+    diff = diff_path.read_text(encoding="utf-8")
+    stats = compute_stats(diff, sensitive_patterns=safety.sensitive_path_patterns)
+    (rd / "diff-stats.json").write_text(_json.dumps(stats.__dict__, indent=2), encoding="utf-8")
+
+    safety_flags: list[str] = ["diff_has_sensitive"] if stats.sensitive_hits else []
+    safety_flags += classify_diff_size(
+        files=stats.files_changed,
+        lines=stats.insertions + stats.deletions,
+        cfg=safety,
+    )
+
+    result_path = rd / "claude-result.md"
+    if result_path.exists():
+        result = parse_result(result_path)
+    else:
+        result = ClaudeResult(summary="(no claude-result.md found)")
+        safety_flags.append("missing_claude_result")
+
+    delta = SharedDelta()
+    goal_summary = (run_dir / "goal.md").read_text(encoding="utf-8").strip().splitlines()[0]
+    payload = build_review_payload(
+        out_path=rd / "review-payload.json",
+        round_n=args.round,
+        goal_summary=goal_summary,
+        result=result,
+        stats=stats,
+        shared_delta=delta,
+        artifact_paths={
+            "result": str(result_path.relative_to(repo)) if result_path.exists() else "",
+            "diff": str(diff_path.relative_to(repo)),
+            "test_log": str((rd / "test-log.txt").relative_to(repo)) if (rd / "test-log.txt").exists() else "",
+            "messages": "",
+        },
+        safety_flags=safety_flags,
+    )
+
+    memo_path = run_dir / "memo.md"
+    memo = memo_path.read_text(encoding="utf-8") if memo_path.exists() else ""
+
+    result_md = result_path.read_text(encoding="utf-8") if result_path.exists() else "(missing)"
+
+    meta_prompt = f"""You are reviewing one round of Claude's work.
+
+Output a markdown review body following this schema EXACTLY:
+
+# Codex Review -- Round {args.round}
+
+## Decision
+APPROVE | NEEDS_CHANGES | STOP_FOR_USER
+
+## Goal Alignment
+<1-2 sentences>
+
+## Findings
+- [severity: high|med|low] <file:line if known> -- <issue>
+
+## Verification
+- Tests: pass|fail|missing -- <specifics>
+
+## Risks
+- <if any>
+
+## Carry-Forward For Next Round
+- <bullet, <= 3 items, quoted verbatim into next prompt>
+
+## Final Notes
+<optional>
+
+Decision rules:
+- STOP_FOR_USER if safety_flags non-empty, OR result.requires_user true, OR you see ambiguity needing human judgement.
+- APPROVE if goal satisfied this round + tests pass + no flags.
+- NEEDS_CHANGES otherwise (default).
+
+## Payload For This Round
+{_json.dumps(payload, indent=2)}
+
+## Accumulated Memo So Far
+{memo or "(empty)"}
+
+## Claude's Result Report
+{result_md}
+"""
+    try:
+        res = call_codex(meta_prompt)
+    except CodexCallError as e:
+        print(f"codex error: {e}", file=sys.stderr)
+        return 1
+
+    (rd / "codex-review.md").write_text(res.final_text, encoding="utf-8")
+
+    m = re.search(
+        r"##\s+Decision\s*\n\s*(APPROVE|NEEDS_CHANGES|STOP_FOR_USER)\s*",
+        res.final_text, re.IGNORECASE,
+    )
+    decision = m.group(1).upper() if m else "STOP_FOR_USER"
+
+    rs = RunState.load(run_dir / "state.json")
+    rs.set_round_decision(args.round, decision)
+    rs.set_round_phase(args.round, "reviewed")
+    rs.save(run_dir / "state.json")
+
+    _emit({
+        "decision": decision,
+        "review_path": str(rd / "codex-review.md"),
+        "round": args.round,
+        "safety_flags": safety_flags,
     })
     return 0
 
