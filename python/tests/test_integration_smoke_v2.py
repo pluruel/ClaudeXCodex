@@ -1,5 +1,5 @@
 """End-to-end: init-run -> plan-init -> plan-round -> simulate worker
- -> record-diff -> mark-worker-done -> review-round -> append-memo -> finalize."""
+ -> record-diff -> mark-worker-done -> review-round -> finalize."""
 from __future__ import annotations
 
 import json
@@ -41,6 +41,8 @@ def test_e2e_claude_entry_flow(tmp_repo: Path, codex_stub) -> None:
     r4 = _run(["capture-baseline"], cwd=tmp_repo)
     assert r4.returncode == 0, r4.stderr
     baseline = json.loads(r4.stdout)["baseline"]
+    r4b = _run(["mark-dispatched", "--run", run_id, "--round", "1"], cwd=tmp_repo)
+    assert r4b.returncode == 0, r4b.stderr
 
     # 5. simulate worker doing work + claude-result.md
     (tmp_repo / "src.txt").write_text("hello\n", encoding="utf-8")
@@ -73,18 +75,7 @@ def test_e2e_claude_entry_flow(tmp_repo: Path, codex_stub) -> None:
     assert r8.returncode == 0, r8.stderr
     assert json.loads(r8.stdout)["decision"] == "APPROVE"
 
-    # 9. append-memo
-    memo = tmp_repo / "m.md"
-    memo.write_text(
-        "## Round 1 -- APPROVE\n- Goal progress: done\n- Top risks: none\n"
-        "- Carry forward: n/a\n- Sensitive: none\n- Diff size: 1 file\n",
-        encoding="utf-8",
-    )
-    r9 = _run(["append-memo", "--run", run_id, "--round", "1",
-               "--memo-file", str(memo)], cwd=tmp_repo)
-    assert r9.returncode == 0, r9.stderr
-
-    # 10. finalize
+    # 9. finalize
     r10 = _run(["finalize", "--run", run_id], cwd=tmp_repo)
     assert r10.returncode == 0, r10.stderr
     assert (run_dir / "final-report.md").exists()

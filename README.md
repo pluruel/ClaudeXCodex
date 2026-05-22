@@ -120,9 +120,10 @@ For each round N, the supervisor runs (in order):
 
 1. `plan-round` — Codex drafts `rounds/NN/claude-prompt.md`
 2. `capture-baseline` — record HEAD sha
-3. **Dispatch worker subagent** via Task tool — worker reads the prompt, implements, runs `record-diff` + `mark-worker-done`, replies `OK` / `FAIL`
-4. `review-round` — Codex reviews the diff + result; auto-parses Goal Alignment / Risks / Carry-Forward sections; appends the round memo to `memo.md`; transitions phase through `reviewed → memo_written → completed` in a single call
-5. Branch on `decision`:
+3. `mark-dispatched` — record that the worker handoff is starting, so interrupted runs can resume accurately
+4. **Dispatch worker subagent** via Task tool — worker reads the prompt, implements, runs `record-diff` + `mark-worker-done`, replies `OK` / `FAIL`
+5. `review-round` — Codex reviews the diff + result; auto-parses Goal Alignment / Risks / Carry-Forward sections; appends the round memo to `memo.md`; transitions phase through `reviewed → memo_written → completed` in a single call
+6. Branch on `decision`:
    - `APPROVE` → `finalize`, point user at `final-report.md`
    - `STOP_FOR_USER` → pause, surface `safety_flags`
    - `NEEDS_CHANGES` → loop back to step 1

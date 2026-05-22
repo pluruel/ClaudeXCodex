@@ -27,6 +27,19 @@ def test_init_run_creates_layout(tmp_repo: Path) -> None:
     assert (run_dir / "rounds").is_dir()
 
 
+def test_init_run_uses_unique_id_for_same_slug(tmp_repo: Path) -> None:
+    r1 = _run(["init-run", "--goal", "first", "--slug", "same"], cwd=tmp_repo)
+    r2 = _run(["init-run", "--goal", "second", "--slug", "same"], cwd=tmp_repo)
+    assert r1.returncode == 0, r1.stderr
+    assert r2.returncode == 0, r2.stderr
+    first = json.loads(r1.stdout)["run_id"]
+    second = json.loads(r2.stdout)["run_id"]
+    assert second == f"{first}-2"
+    runs = tmp_repo / ".agent-loop" / "runs"
+    assert (runs / first / "goal.md").read_text().strip() == "first"
+    assert (runs / second / "goal.md").read_text().strip() == "second"
+
+
 def test_init_round_renders_prompt(tmp_repo: Path) -> None:
     r1 = _run(["init-run", "--goal", "g", "--slug", "s"], cwd=tmp_repo)
     run_id = json.loads(r1.stdout)["run_id"]
@@ -41,6 +54,19 @@ def test_init_round_renders_prompt(tmp_repo: Path) -> None:
     assert js["round_n"] == 1
     rounds_01 = tmp_repo / ".agent-loop" / "runs" / run_id / "rounds" / "01"
     assert (rounds_01 / "claude-prompt.md").read_text() == "PROMPT BODY"
+
+
+def test_mark_dispatched_sets_phase(tmp_repo: Path) -> None:
+    r1 = _run(["init-run", "--goal", "g", "--slug", "s"], cwd=tmp_repo)
+    run_id = json.loads(r1.stdout)["run_id"]
+    prompt = tmp_repo / "prompt.md"
+    prompt.write_text("PROMPT BODY")
+    _run(["init-round", "--run", run_id, "--prompt-file", str(prompt)], cwd=tmp_repo)
+    r2 = _run(["mark-dispatched", "--run", run_id, "--round", "1"], cwd=tmp_repo)
+    assert r2.returncode == 0, r2.stderr
+    state_path = tmp_repo / ".agent-loop" / "runs" / run_id / "state.json"
+    state = json.loads(state_path.read_text())
+    assert state["rounds"][0]["phase"] == "dispatched"
 
 
 def test_scout_emits_json(tmp_repo: Path) -> None:
@@ -97,3 +123,17 @@ def test_inspect_lines_slice(tmp_repo: Path) -> None:
     )
     assert r2.returncode == 0
     assert r2.stdout.strip().splitlines() == ["line 5", "line 6", "line 7"]
+
+
+def test_inspect_refuses_paths_outside_run_dir(tmp_repo: Path) -> None:
+    r1 = _run(["init-run", "--goal", "g", "--slug", "s"], cwd=tmp_repo)
+    run_id = json.loads(r1.stdout)["run_id"]
+    rdir = tmp_repo / ".agent-loop" / "runs" / run_id / "rounds" / "01"
+    rdir.mkdir(parents=True)
+    r2 = _run(
+        ["inspect", "--run", run_id, "--round", "1",
+         "--file", "../../../../README.md"],
+        cwd=tmp_repo,
+    )
+    assert r2.returncode == 1
+    assert "outside run directory" in r2.stdout

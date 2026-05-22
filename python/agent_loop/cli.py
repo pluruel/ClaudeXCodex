@@ -55,6 +55,12 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--run", required=True)
     p.add_argument("--round", type=int, required=True)
 
+    # mark-dispatched
+    p = sub.add_parser("mark-dispatched", help="supervisor hook: flip phase to dispatched")
+    _add_common(p)
+    p.add_argument("--run", required=True)
+    p.add_argument("--round", type=int, required=True)
+
     # init-round
     p = sub.add_parser("init-round", help="render prompt + create round dir")
     _add_common(p)
@@ -152,6 +158,17 @@ def _today_slug(slug: str) -> str:
     return f"{_dt.date.today().isoformat()}-{slug}"
 
 
+def _unique_run_id(repo: _Path, slug: str) -> str:
+    base = _today_slug(slug)
+    runs_root = repo / ".agent-loop" / "runs"
+    if not (runs_root / base).exists():
+        return base
+    i = 2
+    while (runs_root / f"{base}-{i}").exists():
+        i += 1
+    return f"{base}-{i}"
+
+
 def _emit(obj) -> None:
     print(_json.dumps(obj, indent=2))
 
@@ -159,7 +176,7 @@ def _emit(obj) -> None:
 @register("init-run")
 def _cmd_init_run(args) -> int:
     repo = _Path(args.repo).resolve()
-    run_id = _today_slug(args.slug)
+    run_id = _unique_run_id(repo, args.slug)
     run_dir = _run_dir(repo, run_id)
     (run_dir / "rounds").mkdir(parents=True, exist_ok=True)
     (run_dir / "shared").mkdir(parents=True, exist_ok=True)
@@ -537,6 +554,17 @@ def _cmd_mark_worker_done(args) -> int:
     return 0
 
 
+@register("mark-dispatched")
+def _cmd_mark_dispatched(args) -> int:
+    repo = _Path(args.repo).resolve()
+    run_dir = _run_dir(repo, args.run)
+    rs = RunState.load(run_dir / "state.json")
+    rs.set_round_phase(args.round, "dispatched")
+    rs.save(run_dir / "state.json")
+    _emit({"round": args.round, "phase": "dispatched"})
+    return 0
+
+
 @register("scout")
 def _cmd_scout(args) -> int:
     from agent_loop.scout import scout
@@ -607,8 +635,12 @@ def _cmd_abort(args) -> int:
 @register("inspect")
 def _cmd_inspect(args) -> int:
     repo = _Path(args.repo).resolve()
-    rd = _run_dir(repo, args.run) / "rounds" / f"{args.round:02d}"
-    target = rd / args.file
+    run_dir = _run_dir(repo, args.run)
+    rd = run_dir / "rounds" / f"{args.round:02d}"
+    target = (rd / args.file).resolve()
+    if not target.is_relative_to(run_dir.resolve()):
+        _emit({"error": f"refusing to inspect outside run directory: {args.file}"})
+        return 1
     if not target.exists():
         _emit({"error": f"not found: {target}"})
         return 1

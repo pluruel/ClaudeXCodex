@@ -12,13 +12,18 @@ else
   plugin_root=$(CDPATH= cd -- "$(dirname -- "$script_path")/.." && pwd)
 fi
 
-if command -v python >/dev/null 2>&1; then
-  exec python "$plugin_root/python/agent_loop/__main__.py" "$@"
-fi
+run_if_python311() {
+  py=$1
+  shift
+  if command -v "$py" >/dev/null 2>&1 && "$py" -c 'import sys; raise SystemExit(0 if sys.version_info >= (3, 11) else 1)' >/dev/null 2>&1; then
+    exec "$py" "$plugin_root/python/agent_loop/__main__.py" "$@"
+  fi
+}
 
-if command -v python3 >/dev/null 2>&1; then
-  exec python3 "$plugin_root/python/agent_loop/__main__.py" "$@"
-fi
+run_if_python311 "$plugin_root/.venv/bin/python" "$@"
+run_if_python311 "$plugin_root/python/.venv/bin/python" "$@"
+run_if_python311 python "$@"
+run_if_python311 python3 "$@"
 
 printf '%s\n' "agent-loop: Python 3.11+ is required on PATH" >&2
 exit 127

@@ -23,10 +23,12 @@ def test_record_diff_captures_and_writes(tmp_repo: Path) -> None:
         capture_output=True, text=True,
     ).stdout.strip()
     (tmp_repo / "added.txt").write_text("hello\n", encoding="utf-8")
-    subprocess.run(["git", "add", "."], cwd=tmp_repo, check=True)
 
     r = _run(["record-diff", "--run", run_id, "--round", "1",
               "--baseline", baseline], cwd=tmp_repo)
     assert r.returncode == 0, r.stderr
     diff = (rd / "diff.patch").read_text(encoding="utf-8")
     assert "added.txt" in diff
+    assert "new file mode" in diff
+    assert "+hello" in diff
+    assert ".agent-loop" not in diff

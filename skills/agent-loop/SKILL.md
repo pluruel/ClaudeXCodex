@@ -62,7 +62,9 @@ For each round N (starting at 1):
    → JSON `{round_n, prompt_path, summary}`. (Codex drafted the worker prompt.)
 2. `Bash: "${CLAUDE_PLUGIN_ROOT}/bin/agent-loop" capture-baseline`
    → JSON `{baseline}`. Save the sha.
-3. **Dispatch worker subagent via Task tool.** The subagent inherits `${CLAUDE_PLUGIN_ROOT}` from the supervisor. The subagent prompt:
+3. `Bash: "${CLAUDE_PLUGIN_ROOT}/bin/agent-loop" mark-dispatched --run <run_id> --round N`
+   → JSON `{round, phase}`. This records that the worker handoff started.
+4. **Dispatch worker subagent via Task tool.** The subagent inherits `${CLAUDE_PLUGIN_ROOT}` from the supervisor. The subagent prompt:
 
    ```
    Task tool (general-purpose):
@@ -90,9 +92,9 @@ For each round N (starting at 1):
          The supervisor reads state.json and review JSON for everything else.
    ```
 
-4. After Task tool returns, run: `Bash: "${CLAUDE_PLUGIN_ROOT}/bin/agent-loop" review-round --run <run_id> --round N`
+5. After Task tool returns, run: `Bash: "${CLAUDE_PLUGIN_ROOT}/bin/agent-loop" review-round --run <run_id> --round N`
    → JSON `{decision, review_path, safety_flags, memo_appended, memo_path}`. Decision is one of APPROVE / NEEDS_CHANGES / STOP_FOR_USER. `review-round` automatically parses the Codex review and appends the round memo to `memo.md`; do not call `append-memo` yourself.
-5. Branch on `decision`:
+6. Branch on `decision`:
    - `APPROVE` → `Bash: "${CLAUDE_PLUGIN_ROOT}/bin/agent-loop" finalize --run <run_id>`. Tell the user the run completed; point them at `final-report.md`. END.
    - `STOP_FOR_USER` → Tell the user the loop paused; show `safety_flags` and point at `codex-review.md` (for the human, not for you). END.
    - `NEEDS_CHANGES` → Loop back to step 1 (next round).
@@ -103,10 +105,12 @@ For each round N (starting at 1):
    → JSON `{action, notes, options, run_id, current_round}`.
 2. Interpret `action`:
    - `plan_round` → start a fresh round at step 1 of the round loop
-   - `claude_completed` (worker done but no review yet) → go straight to step 4 (review-round)
-   - `write_review` → same as `claude_completed`: run review-round (also re-composes memo if missing)
+   - `dispatch` → go to step 3 (`mark-dispatched`), then dispatch the worker
+   - `advance_to_review` → worker result exists but review has not run; go straight to step 5 (`review-round`)
+   - `write_review` → same as `advance_to_review`: run review-round (also re-composes memo if missing)
    - `write_memo` → review-round was interrupted before memo append. Re-run review-round; it will re-invoke Codex and re-append the memo idempotently.
-   - `branch_decision` → review and memo are done; go straight to step 5 (decision branch)
+   - `branch_decision` → review and memo are done; go straight to step 6 (decision branch)
+   - `finalize` → call finalize if the last completed round was approved
    - `user_confirm` → tell the user the options and wait
 
 ## Forbidden actions

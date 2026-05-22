@@ -5,7 +5,8 @@ Usage:
     result = call_codex("Write a haiku about parsers.")
     print(result.final_text)
 
-The default subprocess runner uses `subprocess.run([codex_bin, "exec", "--json", prompt])`.
+The default subprocess runner uses `subprocess.run([codex_bin, "exec", "--json", "-"],
+input=prompt)`.
 Tests inject a fake runner to avoid the real CLI dependency.
 
 The codex binary defaults to "codex" on PATH. For testing on platforms where
@@ -114,10 +115,14 @@ def call_codex(
     cmd = [*_resolve_codex_bin(), "exec", "--json"]
     if extra_args:
         cmd.extend(extra_args)
-    cmd.append(prompt)
+    cmd.append("-")
 
     try:
-        result = run(cmd, timeout=timeout) if timeout else run(cmd)
+        result = (
+            run(cmd, timeout=timeout, input=prompt)
+            if timeout else
+            run(cmd, input=prompt)
+        )
     except FileNotFoundError as exc:
         binary = cmd[0] if cmd else "codex"
         raise CodexCallError(

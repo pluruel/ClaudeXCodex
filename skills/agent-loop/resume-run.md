@@ -39,7 +39,7 @@ Tell the user:
 
 Then:
 
-- `redispatch` - return to SKILL.md round-loop step 2 (capture-baseline), then step 3 (Task tool dispatch).
+- `redispatch` - return to SKILL.md round-loop step 2 (capture-baseline), then step 3 (`mark-dispatched`) and step 4 (Task tool dispatch).
 - `abandon-round` - write a stub claude-result.md if missing, then call `"${CLAUDE_PLUGIN_ROOT}/bin/agent-loop" review-round`.
 - `abort-run` - call `"${CLAUDE_PLUGIN_ROOT}/bin/agent-loop" abort --run <id>` and stop.
 

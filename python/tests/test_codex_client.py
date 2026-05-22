@@ -26,6 +26,24 @@ def _fake_runner_yielding(events: list[dict]):
 
 
 def test_call_codex_extracts_final_assistant_message() -> None:
+    seen = {}
+    def _runner(cmd, **kwargs):
+        seen["cmd"] = cmd
+        seen["input"] = kwargs.get("input")
+        return _fake_runner_yielding([
+            {"type": "assistant_message", "content": "FINAL OUTPUT BODY"},
+        ])(cmd, **kwargs)
+
+    res = call_codex("hello", runner=_runner)
+    assert isinstance(res, CodexResult)
+    assert res.final_text == "FINAL OUTPUT BODY"
+    assert res.events  # raw events preserved
+    assert res.exit_code == 0
+    assert seen["cmd"][-1] == "-"
+    assert seen["input"] == "hello"
+
+
+def test_call_codex_extracts_final_assistant_message_from_jsonl() -> None:
     runner = _fake_runner_yielding([
         {"type": "thinking", "content": "hmm"},
         {"type": "tool_use", "name": "write_file"},
