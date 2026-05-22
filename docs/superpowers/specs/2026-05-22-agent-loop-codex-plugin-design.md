@@ -4,6 +4,8 @@
 저자: brainstorming session output
 선행 문서: `claude-codex-review-loop-ideas.md`
 
+> **2026-05-22 update — superseded for v2 by Claude-entry pivot.** See `docs/superpowers/plans/2026-05-22-claude-entry-pivot.md`. The original Codex-as-orchestrator + Claude-via-SDK design in this spec is no longer the implementation. Reason: Anthropic's June 14 restrictions on programmatic Claude (`claude -p` / SDK from outside) make the original design unworkable for subscription-only users. The pivot: Claude Code interactive session is the supervisor; Codex CLI (`codex exec --json`) does planning + review headlessly (officially supported under ChatGPT Plus); worker subagents come from Claude's Task tool inside the supervisor's interactive session.
+
 ## 1. Purpose & Scope
 
 Codex CLI에 로드되는 플러그인을 만든다. Codex가 이 플러그인을 통해:
