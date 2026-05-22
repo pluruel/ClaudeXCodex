@@ -38,14 +38,14 @@ jobs:
           pytest -q
 
   validate-plugin:
-    name: Validate Codex plugin layout
+    name: Validate Claude Code plugin layout
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
 
       - name: Check required files exist
         run: |
-          test -f .codex-plugin/plugin.json
+          test -f .claude-plugin/plugin.json
           test -f skills/agent-loop/SKILL.md
           test -d skills/references
           test -f config/defaults.toml
@@ -53,7 +53,7 @@ jobs:
 
       - name: Validate plugin.json is JSON
         run: |
-          python -c "import json; json.load(open('.codex-plugin/plugin.json'))"
+          python -c "import json; json.load(open('.claude-plugin/plugin.json'))"
 
       - name: List skill files
         run: find skills -name '*.md' | sort
@@ -73,7 +73,7 @@ jobs:
               --exclude='*.egg-info' --exclude='.agent-loop' --exclude='.pytest_cache' \
               --exclude='dist' \
               -czf dist/agent-loop-${{ github.ref_name }}.tar.gz \
-              .codex-plugin skills config python docs README.md
+              .claude-plugin skills config python docs README.md
 
       - name: Upload to GitHub Release
         uses: softprops/action-gh-release@v2
