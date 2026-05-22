@@ -21,7 +21,7 @@ During development, invoke the CLI through Python. `pyproject.toml` deliberately
 python -m agent_loop --help
 ```
 
-At plugin runtime, Claude Code exposes the repository root's `bin/agent-loop` wrapper on the Bash tool's `PATH`. That wrapper dispatches to `${CLAUDE_PLUGIN_ROOT}/python/agent_loop/__main__.py`, so the plugin does not require an editable install.
+At plugin runtime, the skill calls `"${CLAUDE_PLUGIN_ROOT}/bin/agent-loop"` directly. That wrapper dispatches to `${CLAUDE_PLUGIN_ROOT}/python/agent_loop/__main__.py`, so the plugin does not require an editable install or Bash `PATH` changes.
 
 ## Module map
 

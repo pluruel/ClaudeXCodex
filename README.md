@@ -63,7 +63,7 @@ Any edits in your working tree are picked up on the next `/plugin install` or `/
 
 ### Python runtime (only requirement)
 
-You just need Python 3.11+ on PATH. The CLI ships **inside the plugin** as a plain Python module and is exposed by the plugin's `bin/agent-loop` wrapper. Claude Code adds plugin `bin/` directories to the Bash tool's `PATH` while the plugin is enabled, so the skill invokes `agent-loop ...` directly. No `pip install`, manual PATH setup, or separate clone is required.
+You just need Python 3.11+ on PATH. The CLI ships **inside the plugin** as a plain Python module and is exposed by the plugin's `bin/agent-loop` wrapper. The skill invokes `"${CLAUDE_PLUGIN_ROOT}/bin/agent-loop" ...` directly, so it does not depend on Bash `PATH`. No `pip install`, manual PATH setup, or separate clone is required.
 
 (If you ARE working on the code locally and want to run the test suite, the optional dev install is:
 

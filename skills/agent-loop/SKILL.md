@@ -17,19 +17,19 @@ Decision rule: if the message after `/agent-loop` is empty or is exactly the wor
 
 ## CLI invocation convention
 
-The CLI is bundled inside this plugin and exposed through the plugin's `bin/agent-loop` wrapper. Claude Code adds plugin `bin/` directories to the Bash tool's `PATH` while the plugin is enabled, so invoke the CLI as:
+The CLI is bundled inside this plugin and exposed through the plugin's `bin/agent-loop` wrapper. Invoke it by absolute plugin path so the workflow does not depend on Bash `PATH` setup:
 
 ```
-agent-loop <subcommand> ...
+"${CLAUDE_PLUGIN_ROOT}/bin/agent-loop" <subcommand> ...
 ```
 
 The wrapper resolves `${CLAUDE_PLUGIN_ROOT}` when available and otherwise infers the plugin root from its own location. It then executes `${CLAUDE_PLUGIN_ROOT}/python/agent_loop/__main__.py`, so no `pip install` is required.
 
 ## Preflight — verify dependencies BEFORE the first real bash call
 
-1. `Bash: agent-loop --help`. Expected: usage banner listing subcommands (`init-run`, `plan-init`, ...).
+1. `Bash: "${CLAUDE_PLUGIN_ROOT}/bin/agent-loop" --help`. Expected: usage banner listing subcommands (`init-run`, `plan-init`, ...).
 2. If `python` isn't found: tell the user to install Python 3.11+ and retry. (On some systems the binary is `python3`; if so use that consistently in every subsequent call.)
-3. If `agent-loop` is not found on `PATH`, report that the plugin install did not expose `bin/agent-loop`. The user can try `/plugin marketplace update claudexcodex`, then `/plugin install agent-loop@claudexcodex`, then `/reload-plugins`.
+3. If `${CLAUDE_PLUGIN_ROOT}` is empty or `bin/agent-loop` is missing, report that the plugin install did not expose the plugin root correctly. The user can try `/plugin marketplace update claudexcodex`, then `/plugin install agent-loop@claudexcodex`, then `/reload-plugins`.
 4. If you see `No module named agent_loop` or `FileNotFoundError`: report it — the plugin install is incomplete. The user can try `/plugin marketplace update claudexcodex`.
 5. Also verify Codex CLI: `Bash: codex --version`. If missing, tell the user to install Codex CLI and run `codex login`.
 
@@ -48,9 +48,9 @@ This plugin ships schema docs at `${CLAUDE_PLUGIN_ROOT}/skills/references/` for 
 
 ## On start (`/agent-loop <goal text>`)
 
-1. `Bash: agent-loop init-run --goal "<goal>" --slug "<short-slug>"`
+1. `Bash: "${CLAUDE_PLUGIN_ROOT}/bin/agent-loop" init-run --goal "<goal>" --slug "<short-slug>"`
    → JSON `{run_id, run_dir}`. Remember `run_id`.
-2. `Bash: agent-loop plan-init --run <run_id>`
+2. `Bash: "${CLAUDE_PLUGIN_ROOT}/bin/agent-loop" plan-init --run <run_id>`
    → JSON `{plan_path, summary}`. (Codex drafted plan.md on disk.)
 3. Enter round loop (next section).
 
@@ -58,9 +58,9 @@ This plugin ships schema docs at `${CLAUDE_PLUGIN_ROOT}/skills/references/` for 
 
 For each round N (starting at 1):
 
-1. `Bash: agent-loop plan-round --run <run_id>`
+1. `Bash: "${CLAUDE_PLUGIN_ROOT}/bin/agent-loop" plan-round --run <run_id>`
    → JSON `{round_n, prompt_path, summary}`. (Codex drafted the worker prompt.)
-2. `Bash: agent-loop capture-baseline`
+2. `Bash: "${CLAUDE_PLUGIN_ROOT}/bin/agent-loop" capture-baseline`
    → JSON `{baseline}`. Save the sha.
 3. **Dispatch worker subagent via Task tool.** The subagent inherits `${CLAUDE_PLUGIN_ROOT}` from the supervisor. The subagent prompt:
 
@@ -78,8 +78,8 @@ For each round N (starting at 1):
        - Append open questions to .agent-loop/runs/<run_id>/shared/open-questions.md.
        - At the end, write .agent-loop/runs/<run_id>/rounds/NN/claude-result.md
          following the schema in your prompt.
-       - Run: `agent-loop record-diff --run <run_id> --round N --baseline <baseline>`
-       - Run: `agent-loop mark-worker-done --run <run_id> --round N`
+       - Run: `"${CLAUDE_PLUGIN_ROOT}/bin/agent-loop" record-diff --run <run_id> --round N --baseline <baseline>`
+       - Run: `"${CLAUDE_PLUGIN_ROOT}/bin/agent-loop" mark-worker-done --run <run_id> --round N`
        - Forbidden: git commit, git push, rm -rf, sudo, db migrations,
          writes to .env / secrets / migrations.
        - Reply to the supervisor with ONE concise paragraph summarizing
@@ -87,17 +87,17 @@ For each round N (starting at 1):
          result.md or diff into your reply.
    ```
 
-4. After Task tool returns, run: `Bash: agent-loop review-round --run <run_id> --round N`
+4. After Task tool returns, run: `Bash: "${CLAUDE_PLUGIN_ROOT}/bin/agent-loop" review-round --run <run_id> --round N`
    → JSON `{decision, review_path, safety_flags}`. Decision is one of APPROVE / NEEDS_CHANGES / STOP_FOR_USER.
-5. `Bash: agent-loop append-memo --run <run_id> --round N --memo-file <path>` — supply a 5-10 line memo derived from the codex-review.md (you may briefly read codex-review.md if needed, but prefer using just the JSON decision and your own brief notes; remember context discipline).
+5. `Bash: "${CLAUDE_PLUGIN_ROOT}/bin/agent-loop" append-memo --run <run_id> --round N --memo-file <path>` — supply a 5-10 line memo derived from the codex-review.md (you may briefly read codex-review.md if needed, but prefer using just the JSON decision and your own brief notes; remember context discipline).
 6. Branch on `decision`:
-   - `APPROVE` → `Bash: agent-loop finalize --run <run_id>`. Tell the user the run completed; point them at `final-report.md`. END.
+   - `APPROVE` → `Bash: "${CLAUDE_PLUGIN_ROOT}/bin/agent-loop" finalize --run <run_id>`. Tell the user the run completed; point them at `final-report.md`. END.
    - `STOP_FOR_USER` → Tell the user the loop paused; show `safety_flags` and point at `codex-review.md`. END.
    - `NEEDS_CHANGES` → Loop back to step 1 (next round).
 
 ## On continue (`/agent-loop` or `/agent-loop continue`)
 
-1. `Bash: agent-loop continue` (optionally `--run <id>`)
+1. `Bash: "${CLAUDE_PLUGIN_ROOT}/bin/agent-loop" continue` (optionally `--run <id>`)
    → JSON `{action, notes, options, run_id, current_round}`.
 2. Interpret `action`:
    - `plan_round` → start a fresh round at step 1 of the round loop
