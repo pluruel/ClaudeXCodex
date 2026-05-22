@@ -1,0 +1,14 @@
+{
+  "name": "claudexcodex",
+  "owner": {
+    "name": "Junnoh Lee",
+    "url": "https://github.com/pluruel"
+  },
+  "plugins": [
+    {
+      "name": "agent-loop",
+      "source": "./",
+      "description": "Claude-supervised review loop with Codex (subscription-headless) as planner/reviewer and Claude subagents as workers"
+    }
+  ]
+}

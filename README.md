@@ -16,9 +16,14 @@ See `docs/superpowers/plans/2026-05-22-claude-entry-pivot.md` for the architectu
 
 ### Claude Code plugin (skills)
 
-```bash
-claude plugin marketplace add pluruel/ClaudeXCodex
+In Claude Code, run:
+
 ```
+/plugin marketplace add pluruel/ClaudeXCodex
+/plugin install agent-loop@claudexcodex
+```
+
+(Restart Claude Code or run `/reload-plugins` if the slash commands don't show up immediately.)
 
 ### Python core (CLI tool, required)
 

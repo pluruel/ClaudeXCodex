@@ -46,14 +46,16 @@ jobs:
       - name: Check required files exist
         run: |
           test -f .claude-plugin/plugin.json
+          test -f .claude-plugin/marketplace.json
           test -f skills/agent-loop/SKILL.md
           test -d skills/references
           test -f config/defaults.toml
           echo "Plugin layout OK"
 
-      - name: Validate plugin.json is JSON
+      - name: Validate plugin.json + marketplace.json are JSON
         run: |
           python -c "import json; json.load(open('.claude-plugin/plugin.json'))"
+          python -c "import json; json.load(open('.claude-plugin/marketplace.json'))"
 
       - name: List skill files
         run: find skills -name '*.md' | sort
