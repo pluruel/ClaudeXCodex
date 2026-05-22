@@ -60,21 +60,21 @@ Point the marketplace at your working tree instead of GitHub:
 
 Any edits in your working tree are picked up on the next `/plugin install` or `/plugin marketplace update`.
 
-### Python core (CLI, required)
+### Python runtime (only requirement)
+
+You just need Python 3.11+ on PATH. The CLI ships **inside the plugin**; the skill invokes it via `python "${CLAUDE_PLUGIN_ROOT}/python/agent_loop/__main__.py"` — no `pip install`, no PATH manipulation, no separate clone.
+
+(If you ARE working on the code locally and want the entry-point script, the optional dev install is:
 
 ```bash
 git clone https://github.com/pluruel/ClaudeXCodex.git
 cd ClaudeXCodex/python
 python -m venv .venv
-# Linux/Mac
-.venv/bin/pip install -e ".[dev]"
-# Windows PowerShell
-.\.venv\Scripts\pip.exe install -e ".[dev]"
+.venv/bin/pip install -e ".[dev]"          # Linux/Mac
+.\.venv\Scripts\pip.exe install -e ".[dev]" # Windows
 ```
 
-After install, the package is invoked as `python -m agent_loop ...` (no PATH setup required). The skill uses this form throughout.
-
-A bare `agent-loop` shell-script wrapper is also installed in the venv's `Scripts/` (Windows) or `bin/` (Unix) — equivalent, but requires that directory on PATH.
+This also gives you the `agent-loop` shell wrapper and lets you run `pytest`.)
 
 ### Authentication (both subscription-based; no API keys needed)
 
