@@ -31,11 +31,25 @@ python -m venv .venv
 export PATH="$PWD/.venv/bin:$PATH"
 ```
 
-Set required env vars before use:
+### Authentication
 
+Pick **one** for Claude (the worker):
+
+**Option A — Claude Code subscription (Pro / Max, recommended if you have it)**
+```bash
+claude login                      # one-time, stores OAuth in ~/.claude/
+unset ANTHROPIC_API_KEY           # make sure no API key takes precedence
+```
+The Claude Agent SDK auto-detects the local Claude Code credentials.
+
+**Option B — Anthropic API key (pay-as-you-go)**
 ```bash
 export ANTHROPIC_API_KEY=sk-ant-...
-export OPENAI_API_KEY=sk-...    # for Codex CLI itself
+```
+
+Codex CLI itself is separate:
+```bash
+export OPENAI_API_KEY=sk-...      # required for Codex
 ```
 
 ## Quick usage
