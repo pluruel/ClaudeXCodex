@@ -1,0 +1,16 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.egg-info/
+.pytest_cache/
+.venv/
+
+# Plugin dev artifacts
+python/.venv/
+
+# Local agent-loop runs (never commit user run logs)
+.agent-loop/
+
+# OS
+.DS_Store

@@ -1,0 +1,6 @@
+{
+  "name": "agent-loop",
+  "version": "0.1.0",
+  "description": "Codex-driven Claude review loop",
+  "skills": ["agent-loop"]
+}
