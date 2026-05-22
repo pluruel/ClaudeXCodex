@@ -32,6 +32,7 @@ def build_review_payload(
             "claude_notes": result.summary,
             "open_questions": result.open_questions,
             "requested_reading": result.requested_reading,
+            "requires_user": result.requires_user,
         },
         "diff_summary": {
             "files_changed": stats.files_changed,

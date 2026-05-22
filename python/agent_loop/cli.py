@@ -270,9 +270,9 @@ def _cmd_append_memo(args) -> int:
         f.write("\n" + body.strip() + "\n")
     rs = RunState.load(_run_dir(repo, args.run) / "state.json")
     rs.set_round_phase(args.round, "memo_written")
-    # mark completed at end
+    rs.save(_run_dir(repo, args.run) / "state.json")
     rs.set_round_phase(args.round, "completed")
-    rs.rounds[-1].ended_at = _dt.datetime.utcnow().isoformat()
+    rs._round(args.round).ended_at = _dt.datetime.utcnow().isoformat()
     rs.save(_run_dir(repo, args.run) / "state.json")
     _emit({"memo_path": str(memo_path)})
     return 0
@@ -311,7 +311,7 @@ def _cmd_dispatch(args) -> int:
     from agent_loop.payload import build_review_payload
     from agent_loop.result_parser import parse_result
     from agent_loop.safety import SafetyConfig, classify_diff_size
-    from agent_loop.sdk_runner import RunnerConfig, run_round
+    from agent_loop.sdk_runner import WORKER_SYSTEM_PROMPT, RunnerConfig, run_round
     from agent_loop.shared_io import SharedDelta, snapshot_sizes, extract_delta
 
     repo = _Path(args.repo).resolve()
@@ -341,7 +341,7 @@ def _cmd_dispatch(args) -> int:
     runner_cfg = RunnerConfig(
         target_repo=repo,
         prompt_text=prompt_text,
-        worker_system_prompt="You are the agent-loop worker.",
+        worker_system_prompt=WORKER_SYSTEM_PROMPT,
         round_dir=rd,
         plugins={},
         safety=safety,

@@ -11,7 +11,7 @@ Invoked on the first round of a new run.
 
 - `<run_dir>/goal.md` — the user's goal
 - `<run_dir>/shared/knowledge.md` — only if the run inherited prior knowledge
-- `Bash: agent-loop scout --goal "<goal>" --keywords "<k1> <k2> ..."` → scout JSON
+- `Bash: agent-loop scout --goal "<goal>" --keywords <k1> <k2> ...` → scout JSON
 
 Pick 3–6 keywords from the goal. Avoid stopwords. Include language/library hints if obvious.
 

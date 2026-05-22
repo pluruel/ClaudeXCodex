@@ -19,7 +19,7 @@ Invoked when the prior round returned NEEDS_CHANGES.
 
 If the next task targets an area you have no signal for:
 
-`Bash: agent-loop scout --goal "<remaining task>" --keywords "..."` → JSON
+`Bash: agent-loop scout --goal "<remaining task>" --keywords <k1> <k2> ...` → JSON
 
 Use sparingly — only when carry-forward + plan don't tell you where to look.
 

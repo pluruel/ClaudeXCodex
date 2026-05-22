@@ -13,7 +13,8 @@ The JSON that `agent-loop dispatch` writes to `<round_dir>/review-payload.json` 
     "test_outcome": "pass",
     "claude_notes": "JWT verify added",
     "open_questions": ["refresh token?"],
-    "requested_reading": ["src/sessions/store.py"]
+    "requested_reading": ["src/sessions/store.py"],
+    "requires_user": false
   },
   "diff_summary": {
     "files_changed": 1,
