@@ -16,9 +16,9 @@ dev = [
   "pytest-asyncio>=0.23",
 ]
 
-# No [project.scripts] entry-point on purpose: the plugin invokes the CLI as
-# `python -m agent_loop` (or via the bundled `${CLAUDE_PLUGIN_ROOT}/python/agent_loop/__main__.py`)
-# so a `pip install` never plants an `agent-loop` shell script on PATH.
+# No [project.scripts] entry-point on purpose: development uses
+# `python -m agent_loop`, while plugin runtime uses the repository-level
+# `bin/agent-loop` wrapper that Claude Code exposes on PATH.
 
 [tool.setuptools.packages.find]
 where = ["."]

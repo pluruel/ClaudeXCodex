@@ -1,0 +1,24 @@
+#!/usr/bin/env sh
+set -eu
+
+if [ -n "${CLAUDE_PLUGIN_ROOT:-}" ]; then
+  plugin_root=$CLAUDE_PLUGIN_ROOT
+else
+  script_path=$0
+  case "$script_path" in
+    */*) ;;
+    *) script_path=$(command -v -- "$script_path" 2>/dev/null || printf '%s\n' "$script_path") ;;
+  esac
+  plugin_root=$(CDPATH= cd -- "$(dirname -- "$script_path")/.." && pwd)
+fi
+
+if command -v python >/dev/null 2>&1; then
+  exec python "$plugin_root/python/agent_loop/__main__.py" "$@"
+fi
+
+if command -v python3 >/dev/null 2>&1; then
+  exec python3 "$plugin_root/python/agent_loop/__main__.py" "$@"
+fi
+
+printf '%s\n' "agent-loop: Python 3.11+ is required on PATH" >&2
+exit 127

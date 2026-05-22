@@ -15,15 +15,13 @@ All test and dev commands assume the project's `.venv`. Do not install into a sy
 
 ## CLI invocation
 
-The CLI is always invoked through Python — `pyproject.toml` deliberately defines **no** `[project.scripts]` entry point, so `pip install` never creates an `agent-loop` shell wrapper on PATH:
+During development, invoke the CLI through Python. `pyproject.toml` deliberately defines **no** `[project.scripts]` entry point, so `pip install` does not create a package-managed `agent-loop` script:
 
 ```bash
 python -m agent_loop --help
-# or, from the plugin install (no pip install needed):
-python "${CLAUDE_PLUGIN_ROOT}/python/agent_loop/__main__.py" --help
 ```
 
-The skill files and the test suite both invoke the module via `python -m agent_loop`, so behavior is identical regardless of install state or platform.
+At plugin runtime, Claude Code exposes the repository root's `bin/agent-loop` wrapper on the Bash tool's `PATH`. That wrapper dispatches to `${CLAUDE_PLUGIN_ROOT}/python/agent_loop/__main__.py`, so the plugin does not require an editable install.
 
 ## Module map
 

@@ -7,6 +7,7 @@ See `docs/superpowers/plans/2026-05-22-claude-entry-pivot.md` for the architectu
 ## Repo layout
 
 - `.claude-plugin/plugin.json` — Claude Code plugin manifest
+- `bin/` — plugin executables added to the Bash tool's `PATH` while the plugin is enabled
 - `skills/` — plugin skills (`agent-loop/`, `references/`)
 - `config/` — packaged plugin defaults (e.g. `defaults.toml`)
 - `python/` — Python core (`python -m agent_loop` CLI, codex subprocess wrapper, state, safety)
@@ -62,7 +63,7 @@ Any edits in your working tree are picked up on the next `/plugin install` or `/
 
 ### Python runtime (only requirement)
 
-You just need Python 3.11+ on PATH. The CLI ships **inside the plugin** as a plain Python module; the skill invokes it via `python "${CLAUDE_PLUGIN_ROOT}/python/agent_loop/__main__.py"` — no `pip install`, no PATH manipulation, no separate clone. There is **no** `agent-loop` shell binary at any layer of this project; every invocation goes through `python` / `python -m agent_loop`.
+You just need Python 3.11+ on PATH. The CLI ships **inside the plugin** as a plain Python module and is exposed by the plugin's `bin/agent-loop` wrapper. Claude Code adds plugin `bin/` directories to the Bash tool's `PATH` while the plugin is enabled, so the skill invokes `agent-loop ...` directly. No `pip install`, manual PATH setup, or separate clone is required.
 
 (If you ARE working on the code locally and want to run the test suite, the optional dev install is:
 
@@ -76,7 +77,7 @@ python -m venv .venv
 .\.venv\Scripts\pytest.exe -q                 # Windows
 ```
 
-The editable install just registers the `agent_loop` package on the venv's `sys.path` — `pip install` does NOT create an `agent-loop` entry-point script anymore. Tests invoke `python -m agent_loop ...` directly.)
+The editable install registers the `agent_loop` package on the venv's `sys.path`. Tests invoke `python -m agent_loop ...` directly; plugin runtime goes through `bin/agent-loop`.)
 
 ### Authentication (both subscription-based; no API keys needed)
 

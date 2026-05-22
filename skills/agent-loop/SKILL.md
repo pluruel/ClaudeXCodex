@@ -15,30 +15,22 @@ You are the supervisor of a bounded review loop. Your context must stay lean. Th
 
 Decision rule: if the message after `/agent-loop` is empty or is exactly the word `continue`, treat as resume. Otherwise treat the whole remainder as the goal and follow "On start" below.
 
-## CLI invocation convention (Python only)
+## CLI invocation convention
 
-The CLI is a Python module bundled inside this plugin. **There is no `agent-loop` shell command.** Never type `agent-loop ...` into Bash — it will fail with "command not found." Always invoke through Python:
-
-```
-python "${CLAUDE_PLUGIN_ROOT}/python/agent_loop/__main__.py" <subcommand> ...
-```
-
-Throughout the rest of this skill (and all sub-skills) the literal form above is abbreviated `$AL` for readability. When you actually call the Bash tool, **substitute the full Python path** — shell variables do not persist between Claude Code Bash calls, so paste the whole thing each time.
-
-Example expansion: the skill text `$AL init-run --goal "..."` means you call:
+The CLI is bundled inside this plugin and exposed through the plugin's `bin/agent-loop` wrapper. Claude Code adds plugin `bin/` directories to the Bash tool's `PATH` while the plugin is enabled, so invoke the CLI as:
 
 ```
-Bash: python "${CLAUDE_PLUGIN_ROOT}/python/agent_loop/__main__.py" init-run --goal "..."
+agent-loop <subcommand> ...
 ```
 
-(Power users who developed the package locally with `pip install -e python/` get an `agent-loop` entry-point on PATH as a side effect. The supervisor ignores that — it always uses the Python form so the same skill works regardless of install state.)
+The wrapper resolves `${CLAUDE_PLUGIN_ROOT}` when available and otherwise infers the plugin root from its own location. It then executes `${CLAUDE_PLUGIN_ROOT}/python/agent_loop/__main__.py`, so no `pip install` is required.
 
 ## Preflight — verify dependencies BEFORE the first real bash call
 
-1. `Bash: python "${CLAUDE_PLUGIN_ROOT}/python/agent_loop/__main__.py" --help`. Expected: usage banner listing subcommands (`init-run`, `plan-init`, ...).
+1. `Bash: agent-loop --help`. Expected: usage banner listing subcommands (`init-run`, `plan-init`, ...).
 2. If `python` isn't found: tell the user to install Python 3.11+ and retry. (On some systems the binary is `python3`; if so use that consistently in every subsequent call.)
-3. If you see `No module named agent_loop` or `FileNotFoundError`: report it — the plugin install is incomplete. The user can try `/plugin marketplace update claudexcodex`.
-4. Do NOT hunt for an `agent-loop` binary anywhere — the only thing that matters is `${CLAUDE_PLUGIN_ROOT}/python/agent_loop/__main__.py` being executable by Python.
+3. If `agent-loop` is not found on `PATH`, report that the plugin install did not expose `bin/agent-loop`. The user can try `/plugin marketplace update claudexcodex`, then `/plugin install agent-loop@claudexcodex`, then `/reload-plugins`.
+4. If you see `No module named agent_loop` or `FileNotFoundError`: report it — the plugin install is incomplete. The user can try `/plugin marketplace update claudexcodex`.
 5. Also verify Codex CLI: `Bash: codex --version`. If missing, tell the user to install Codex CLI and run `codex login`.
 
 Skip this preflight only if you've already verified both deps earlier in the same session.
@@ -56,11 +48,9 @@ This plugin ships schema docs at `${CLAUDE_PLUGIN_ROOT}/skills/references/` for 
 
 ## On start (`/agent-loop <goal text>`)
 
-Throughout this section `$AL` is shorthand for `python "${CLAUDE_PLUGIN_ROOT}/python/agent_loop/__main__.py"` (see "CLI invocation convention" above — when calling Bash, expand it).
-
-1. `Bash: $AL init-run --goal "<goal>" --slug "<short-slug>"`
+1. `Bash: agent-loop init-run --goal "<goal>" --slug "<short-slug>"`
    → JSON `{run_id, run_dir}`. Remember `run_id`.
-2. `Bash: $AL plan-init --run <run_id>`
+2. `Bash: agent-loop plan-init --run <run_id>`
    → JSON `{plan_path, summary}`. (Codex drafted plan.md on disk.)
 3. Enter round loop (next section).
 
@@ -68,11 +58,9 @@ Throughout this section `$AL` is shorthand for `python "${CLAUDE_PLUGIN_ROOT}/py
 
 For each round N (starting at 1):
 
-(`$AL` below is shorthand for `python "${CLAUDE_PLUGIN_ROOT}/python/agent_loop/__main__.py"` — expand when calling Bash.)
-
-1. `Bash: $AL plan-round --run <run_id>`
+1. `Bash: agent-loop plan-round --run <run_id>`
    → JSON `{round_n, prompt_path, summary}`. (Codex drafted the worker prompt.)
-2. `Bash: $AL capture-baseline`
+2. `Bash: agent-loop capture-baseline`
    → JSON `{baseline}`. Save the sha.
 3. **Dispatch worker subagent via Task tool.** The subagent inherits `${CLAUDE_PLUGIN_ROOT}` from the supervisor. The subagent prompt:
 
@@ -90,8 +78,8 @@ For each round N (starting at 1):
        - Append open questions to .agent-loop/runs/<run_id>/shared/open-questions.md.
        - At the end, write .agent-loop/runs/<run_id>/rounds/NN/claude-result.md
          following the schema in your prompt.
-       - Run: `python "${CLAUDE_PLUGIN_ROOT}/python/agent_loop/__main__.py" record-diff --run <run_id> --round N --baseline <baseline>`
-       - Run: `python "${CLAUDE_PLUGIN_ROOT}/python/agent_loop/__main__.py" mark-worker-done --run <run_id> --round N`
+       - Run: `agent-loop record-diff --run <run_id> --round N --baseline <baseline>`
+       - Run: `agent-loop mark-worker-done --run <run_id> --round N`
        - Forbidden: git commit, git push, rm -rf, sudo, db migrations,
          writes to .env / secrets / migrations.
        - Reply to the supervisor with ONE concise paragraph summarizing
@@ -99,17 +87,17 @@ For each round N (starting at 1):
          result.md or diff into your reply.
    ```
 
-4. After Task tool returns, run: `Bash: $AL review-round --run <run_id> --round N`
+4. After Task tool returns, run: `Bash: agent-loop review-round --run <run_id> --round N`
    → JSON `{decision, review_path, safety_flags}`. Decision is one of APPROVE / NEEDS_CHANGES / STOP_FOR_USER.
-5. `Bash: $AL append-memo --run <run_id> --round N --memo-file <path>` — supply a 5-10 line memo derived from the codex-review.md (you may briefly read codex-review.md if needed, but prefer using just the JSON decision and your own brief notes; remember context discipline).
+5. `Bash: agent-loop append-memo --run <run_id> --round N --memo-file <path>` — supply a 5-10 line memo derived from the codex-review.md (you may briefly read codex-review.md if needed, but prefer using just the JSON decision and your own brief notes; remember context discipline).
 6. Branch on `decision`:
-   - `APPROVE` → `Bash: $AL finalize --run <run_id>`. Tell the user the run completed; point them at `final-report.md`. END.
+   - `APPROVE` → `Bash: agent-loop finalize --run <run_id>`. Tell the user the run completed; point them at `final-report.md`. END.
    - `STOP_FOR_USER` → Tell the user the loop paused; show `safety_flags` and point at `codex-review.md`. END.
    - `NEEDS_CHANGES` → Loop back to step 1 (next round).
 
 ## On continue (`/agent-loop` or `/agent-loop continue`)
 
-1. `Bash: $AL continue` (optionally `--run <id>`) — i.e. `python "${CLAUDE_PLUGIN_ROOT}/python/agent_loop/__main__.py" continue`
+1. `Bash: agent-loop continue` (optionally `--run <id>`)
    → JSON `{action, notes, options, run_id, current_round}`.
 2. Interpret `action`:
    - `plan_round` → start a fresh round at step 1 of the round loop
