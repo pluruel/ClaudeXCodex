@@ -60,15 +60,21 @@ Point the marketplace at your working tree instead of GitHub:
 
 Any edits in your working tree are picked up on the next `/plugin install` or `/plugin marketplace update`.
 
-### Python core (CLI tool, required)
+### Python core (CLI, required)
 
 ```bash
 git clone https://github.com/pluruel/ClaudeXCodex.git
 cd ClaudeXCodex/python
 python -m venv .venv
+# Linux/Mac
 .venv/bin/pip install -e ".[dev]"
-export PATH="$PWD/.venv/bin:$PATH"
+# Windows PowerShell
+.\.venv\Scripts\pip.exe install -e ".[dev]"
 ```
+
+After install, the package is invoked as `python -m agent_loop ...` (no PATH setup required). The skill uses this form throughout.
+
+A bare `agent-loop` shell-script wrapper is also installed in the venv's `Scripts/` (Windows) or `bin/` (Unix) — equivalent, but requires that directory on PATH.
 
 ### Authentication (both subscription-based; no API keys needed)
 
