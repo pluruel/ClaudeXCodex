@@ -16,14 +16,49 @@ See `docs/superpowers/plans/2026-05-22-claude-entry-pivot.md` for the architectu
 
 ### Claude Code plugin (skills)
 
-In Claude Code, run:
+In Claude Code, run these slash commands in order:
 
 ```
 /plugin marketplace add pluruel/ClaudeXCodex
 /plugin install agent-loop@claudexcodex
+/reload-plugins
 ```
 
-(Restart Claude Code or run `/reload-plugins` if the slash commands don't show up immediately.)
+After this, `/agent-loop start "<goal>"` and `/agent-loop continue` become available.
+
+#### Updating to the latest version
+
+The local marketplace clone is cached. When upstream changes, refresh it with:
+
+```
+/plugin marketplace update claudexcodex
+```
+
+If `update` is unavailable or doesn't take effect, remove and re-add:
+
+```
+/plugin marketplace remove claudexcodex
+/plugin marketplace add pluruel/ClaudeXCodex
+/plugin install agent-loop@claudexcodex
+```
+
+#### Uninstall
+
+```
+/plugin uninstall agent-loop@claudexcodex
+/plugin marketplace remove claudexcodex
+```
+
+#### Local development install (testing un-pushed changes)
+
+Point the marketplace at your working tree instead of GitHub:
+
+```
+/plugin marketplace add c:\path\to\ClaudeXCodex
+/plugin install agent-loop@claudexcodex
+```
+
+Any edits in your working tree are picked up on the next `/plugin install` or `/plugin marketplace update`.
 
 ### Python core (CLI tool, required)
 
