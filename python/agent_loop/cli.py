@@ -27,6 +27,11 @@ def build_parser() -> argparse.ArgumentParser:
     _add_common(p)
     p.add_argument("--run", required=True)
 
+    # plan-round
+    p = sub.add_parser("plan-round", help="ask Codex to draft next round prompt")
+    _add_common(p)
+    p.add_argument("--run", required=True)
+
     # init-round
     p = sub.add_parser("init-round", help="render prompt + create round dir")
     _add_common(p)
@@ -181,6 +186,76 @@ def _cmd_plan_init(args) -> int:
     plan_path = run_dir / "plan.md"
     plan_path.write_text(res.final_text, encoding="utf-8")
     _emit({"plan_path": str(plan_path), "summary": "plan drafted"})
+    return 0
+
+
+@register("plan-round")
+def _cmd_plan_round(args) -> int:
+    from agent_loop.codex_client import call_codex, CodexCallError
+    repo = _Path(args.repo).resolve()
+    run_dir = _run_dir(repo, args.run)
+    rs = RunState.load(run_dir / "state.json")
+    next_n = (rs.rounds[-1].n + 1) if rs.rounds else 1
+
+    goal = (run_dir / "goal.md").read_text(encoding="utf-8").strip()
+    plan_path = run_dir / "plan.md"
+    plan = plan_path.read_text(encoding="utf-8") if plan_path.exists() else "(no plan.md)"
+    memo_path = run_dir / "memo.md"
+    memo = memo_path.read_text(encoding="utf-8") if memo_path.exists() else ""
+
+    prev_round = next_n - 1
+    last_payload = ""
+    if prev_round >= 1:
+        ppath = run_dir / "rounds" / f"{prev_round:02d}" / "review-payload.json"
+        if ppath.exists():
+            last_payload = ppath.read_text(encoding="utf-8")
+
+    meta_prompt = f"""You are drafting the Claude worker prompt for round {next_n}.
+
+Write ONLY the prompt body (markdown). It MUST include these sections:
+- ## Carry-Forward From Previous Round
+- ## Goal
+- ## Task (this round)
+- ## Required Reading (read these first, in order)
+- ## Suggested Reading (only if needed)
+- ## Out of Scope (do not Read/Edit/Write)
+- ## External References
+- ## Mandatory Outputs (progress.md, claude-result.md schema, shared/* discipline)
+- ## Reading List Discipline
+- ## Forbidden Actions
+- ## claude-result.md schema
+
+Use the goal, plan, memo, and previous review payload (if any) to fill these in.
+Keep Required Reading to <= 4 paths. Out of Scope must cover unrelated top-level dirs.
+
+## Goal
+{goal}
+
+## Plan
+{plan}
+
+## Memo So Far
+{memo or "(empty -- first round)"}
+
+## Previous Review Payload (round {prev_round})
+{last_payload or "(none -- first round)"}
+"""
+    try:
+        res = call_codex(meta_prompt)
+    except CodexCallError as e:
+        print(f"codex error: {e}", file=sys.stderr)
+        return 1
+
+    rd = run_dir / "rounds" / f"{next_n:02d}"
+    rd.mkdir(parents=True, exist_ok=True)
+    (rd / "claude-prompt.md").write_text(res.final_text, encoding="utf-8")
+    rs.start_round(n=next_n, started_at=_dt.datetime.utcnow().isoformat())
+    rs.save(run_dir / "state.json")
+    _emit({
+        "round_n": next_n,
+        "prompt_path": str(rd / "claude-prompt.md"),
+        "summary": f"round {next_n} prompt drafted",
+    })
     return 0
 
 
