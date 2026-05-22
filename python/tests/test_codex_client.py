@@ -88,3 +88,46 @@ def test_call_codex_skips_malformed_lines() -> None:
         return R()
     res = call_codex("x", runner=_runner)
     assert res.final_text == "DONE"
+
+
+def test_call_codex_handles_new_item_completed_schema() -> None:
+    """Codex 0.133.0+ emits item.completed events with nested agent_message item."""
+    runner = _fake_runner_yielding([
+        {"type": "thread.started", "thread_id": "t-1"},
+        {"type": "turn.started"},
+        {
+            "type": "item.completed",
+            "item": {"type": "agent_message", "text": "NEW SCHEMA OUTPUT"},
+        },
+        {"type": "turn.completed"},
+    ])
+    res = call_codex("hello", runner=runner)
+    assert res.final_text == "NEW SCHEMA OUTPUT"
+
+
+def test_call_codex_handles_new_schema_last_agent_message_wins() -> None:
+    """If multiple agent_message items appear, take the final one (matches old behavior)."""
+    runner = _fake_runner_yielding([
+        {"type": "item.completed", "item": {"type": "agent_message", "text": "first"}},
+        {"type": "item.completed", "item": {"type": "agent_message", "text": "second"}},
+    ])
+    res = call_codex("x", runner=runner)
+    assert res.final_text == "second"
+
+
+def test_default_runner_decodes_utf8_regardless_of_locale(tmp_path, monkeypatch) -> None:
+    """Subprocess output must decode as UTF-8 even on cp949 / non-UTF-8 locales."""
+    import subprocess
+    import sys
+
+    from agent_loop.codex_client import _default_runner
+
+    script = tmp_path / "emit.py"
+    script.write_text(
+        "import sys\n"
+        "sys.stdout.buffer.write('\\u3131\\u314f\\n'.encode('utf-8'))\n",
+        encoding="utf-8",
+    )
+    result = _default_runner([sys.executable, str(script)])
+    assert result.returncode == 0
+    assert "ㄱㅏ" in result.stdout

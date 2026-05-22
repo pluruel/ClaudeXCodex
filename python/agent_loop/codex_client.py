@@ -42,6 +42,11 @@ SubprocessRunner = Callable[..., Any]
 
 
 def _default_runner(cmd: list[str], **kwargs):
+    # Force UTF-8 decoding so subprocess reader threads don't crash on
+    # cp949/locale defaults when Codex emits non-ASCII JSON (Windows default
+    # locale is cp949 on Korean systems, which can't decode UTF-8 bytes).
+    kwargs.setdefault("encoding", "utf-8")
+    kwargs.setdefault("errors", "replace")
     return subprocess.run(cmd, capture_output=True, text=True, **kwargs)
 
 
@@ -60,6 +65,28 @@ def _resolve_codex_bin() -> list[str]:
             if npm_codex.exists():
                 return [str(npm_codex)]
     return ["codex"]
+
+
+def _extract_assistant_text(evt: dict[str, Any]) -> Optional[str]:
+    """Pull the assistant message text out of a single Codex event.
+
+    Supports both schemas:
+      - Pre-0.130 (legacy): ``{"type": "assistant_message", "content": "..."}``
+      - 0.133+ (current):   ``{"type": "item.completed",
+                              "item": {"type": "agent_message", "text": "..."}}``
+
+    Returns the text string if this event carries the assistant message, else None.
+    """
+    evt_type = evt.get("type")
+    if evt_type == "assistant_message":
+        content = evt.get("content")
+        return content if isinstance(content, str) else None
+    if evt_type == "item.completed":
+        item = evt.get("item")
+        if isinstance(item, dict) and item.get("type") == "agent_message":
+            text = item.get("text")
+            return text if isinstance(text, str) else None
+    return None
 
 
 def call_codex(
@@ -120,10 +147,9 @@ def call_codex(
         except json.JSONDecodeError:
             continue  # tolerate stray non-JSON lines
         events.append(evt)
-        if evt.get("type") == "assistant_message":
-            content = evt.get("content", "")
-            if isinstance(content, str):
-                final_text = content
+        text = _extract_assistant_text(evt)
+        if text is not None:
+            final_text = text
 
     if final_text is None:
         raise CodexCallError(
