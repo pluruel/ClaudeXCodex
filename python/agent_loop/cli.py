@@ -523,6 +523,9 @@ def _parse_round_plan(raw: str, *, round_n: int, allowed_models: list[str],
         "execution_plan_bullets": _list_field("execution_plan_bullets"),
         "acceptance_criteria": _list_field("acceptance_criteria"),
         "carry_forward": _str_field("carry_forward"),
+        # Commit fields: Codex decides during plan-round whether to commit on approve.
+        "commit_on_approve": bool(plan.get("commit_on_approve", False)),
+        "commit_message": str(plan.get("commit_message", "")).strip(),
         # B1: parse failure flag — True when the raw JSON was malformed or non-dict.
         "parse_failed": parse_failed,
     }
@@ -821,7 +824,9 @@ Output ONLY JSON with this schema:
         "depends_on": ["<same-round subtask id>"],
         "deliverable": "<what this subtask must produce>"
       }}
-    ]
+    ],
+    "commit_on_approve": true,
+    "commit_message": "<Conventional Commits one-liner, or empty string when commit_on_approve is false>"
   }},
   "task_description": "<one paragraph describing what the worker must accomplish this round>",
   "execution_plan_bullets": [
@@ -864,6 +869,15 @@ summary for the user announce line. Per-subtask model/effort govern actual dispa
 
 If the ideal model is unavailable, choose the closest allowed model from the list.
 If `reasoning_effort` is unclear, prefer `{default_effort}`.
+
+Commit decision rules:
+- Set commit_on_approve to true when this round will land production-ready changes
+  that form a coherent, shippable unit (feature, fix, refactor).
+- Set commit_on_approve to false for exploratory analysis, partial-progress, or
+  scaffolding rounds that do not yet stand alone.
+- When true, write commit_message as a Conventional Commits one-liner
+  (e.g. "feat(auth): add JWT refresh endpoint"). Keep it under 72 characters.
+- When false, commit_message must be an empty string.
 
 ## Goal
 {goal}
@@ -971,6 +985,8 @@ If `reasoning_effort` is unclear, prefer `{default_effort}`.
         "reasoning_effort": round_plan["reasoning_effort"],
         "subtasks": subtasks,
         "subtask_count": len(subtasks),
+        "commit_on_approve": round_plan["commit_on_approve"],
+        "commit_message": round_plan["commit_message"],
         "summary": f"round {next_n} prompt drafted",
     })
     return 0

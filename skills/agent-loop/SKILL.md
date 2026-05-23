@@ -383,7 +383,9 @@ For each round N (starting at 1):
 6. After Task tool returns, run: `Bash: "${CLAUDE_PLUGIN_ROOT}/bin/agent-loop" review-round --run <run_id> --round N`
    → JSON `{decision, review_path, safety_flags, memo_appended, memo_path}`. Decision is one of APPROVE / NEEDS_CHANGES / STOP_FOR_USER. `review-round` automatically parses the Codex review and appends the round memo to `memo.md`; do not call `append-memo` yourself.
 7. Branch on `decision`:
-   - `APPROVE` → `Bash: "${CLAUDE_PLUGIN_ROOT}/bin/agent-loop" finalize --run <run_id>`. Tell the user the run completed; point them at `final-report.md`. END.
+   - `APPROVE` →
+     1. If `commit_on_approve` is `true` (from `plan-round` step 1 JSON): `Bash: git add -A && git commit -m "<commit_message>"`. Show the commit hash to the user.
+     2. `Bash: "${CLAUDE_PLUGIN_ROOT}/bin/agent-loop" finalize --run <run_id>`. Tell the user the run completed; point them at `final-report.md`. END.
    - `STOP_FOR_USER` → Tell the user the loop paused; show `safety_flags` and point at `codex-review.md` (for the human, not for you). END.
    - `NEEDS_CHANGES` → Loop back to step 1 (next round).
 
@@ -403,7 +405,8 @@ For each round N (starting at 1):
 
 ## Forbidden actions
 
-- Never run `git commit`, `git push`, or any destructive command yourself.
+- Never run `git push` or any destructive command yourself.
+- `git commit` is allowed only in the APPROVE branch when `commit_on_approve` is `true`.
 - Never read full diff/result/log files into your context. Use the `inspect` subcommand with narrow `--lines` only when the JSON status is insufficient. `--lines` accepts `N` (first N), `N-` (from N onward), or `A-B` (range).
 - Never invent CLI behavior — if a subcommand's JSON doesn't match what you expected, stop and report to the user.
 
