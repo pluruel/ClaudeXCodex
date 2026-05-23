@@ -180,6 +180,32 @@ For each round N (starting at 1):
 
    The subagent inherits `${CLAUDE_PLUGIN_ROOT}` from the supervisor.
 
+   **Per-subtask announce (mandatory, BEFORE every Task tool call in this round):**
+
+   The Task tool's terminal rendering does NOT display the per-call `model`
+   parameter — the user sees only `Agent(description)` while a subtask runs.
+   To make routing visible without forcing the user to open files, the
+   supervisor MUST emit ONE plain text line immediately before each Task call:
+
+   ```
+   <subtask.id> → <subtask.model> (<subtask.reasoning_effort>, <subtask.scope>) — <one-sentence goal>
+   ```
+
+   Example:
+
+   ```
+   r2-a1 → sonnet (high, narrow) — audit [worker_reasoning] wiring end-to-end
+   r2-a2 → sonnet (high, narrow) — audit round_plan.json / depends_on consistency
+   r2-i1 → sonnet (medium, normal) — apply targeted fixes from r2-a1 / r2-a2
+   r2-v1 → haiku (low, narrow) — run pytest sweep + invariant grep
+   ```
+
+   When multiple subtasks fan out in parallel (analysis phase), emit one such
+   line per subtask, then send the Task calls together. The lines are plain
+   user-facing text — not tool calls, not stored in any file, just so the
+   user sees which model is handling which slice as the agent transcript
+   scrolls.
+
    **Phase 1 — Analysis (parallel):**
    Collect all subtasks with `role: analysis`. Dispatch them simultaneously as
    independent Task tool calls (no `depends_on` between siblings). Per-subtask prompt:
