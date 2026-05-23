@@ -118,61 +118,8 @@ def test_plan_round_normalizes_invalid_worker_model(tmp_repo: Path) -> None:
     plan_json = json.loads(rp.read_text(encoding="utf-8"))
     assert plan_json["worker_model"] == "sonnet"
     assert "scope" not in plan_json
-    # The CLI must rewrite Codex's drifted "## Worker Model" body to match the
-    # normalized routing decision; "opus - claimed-by-codex" must NOT survive.
-    pr = tmp_repo / ".agent-loop" / "runs" / run_id / "rounds" / "01" / "claude-prompt.md"
-    prompt_text = pr.read_text(encoding="utf-8")
-    assert "## Worker Model" in prompt_text
-    assert "sonnet" in prompt_text
-    assert "claimed-by-codex" not in prompt_text
-    # C1a: Scope line must NOT appear in prompt
-    assert "Scope:" not in prompt_text
 
 
-def test_plan_round_injects_worker_model_when_codex_omits_it(tmp_repo: Path) -> None:
-    """Codex's prompt draft may not include a ## Worker Model section.
-    plan-round must inject one so the worker subagent never loses routing info.
-    """
-    r1 = _run(["init-run", "--goal", "g", "--slug", "s"], cwd=tmp_repo)
-    run_id = json.loads(r1.stdout)["run_id"]
-    plan = tmp_repo / ".agent-loop" / "runs" / run_id / "plan.md"
-    plan.write_text("# Plan\n\n## Tasks\n1. [ ] do A\n", encoding="utf-8")
-
-    # A1: single merged envelope
-    env = _codex_stub_sequence(tmp_repo, [
-        json.dumps({
-            "round_plan": {
-                "round": 1,
-                "worker_model": "opus",
-                "worker_model_reason": "broad architecture refactor",
-                "reasoning_effort": "high",
-                "subtasks": [],
-            },
-            "task_description": "Do the refactor",
-            "execution_plan_bullets": [],
-            "acceptance_criteria": [],
-            "carry_forward": "",
-        }),
-    ])
-    r = _run(["plan-round", "--run", run_id], cwd=tmp_repo, env_overrides=env)
-    assert r.returncode == 0, r.stderr
-    js = json.loads(r.stdout)
-    assert js["worker_model"] == "opus"
-    # C1a: no scope key
-    assert "scope" not in js
-
-    pr = tmp_repo / ".agent-loop" / "runs" / run_id / "rounds" / "01" / "claude-prompt.md"
-    prompt_text = pr.read_text(encoding="utf-8")
-    assert "## Worker Model" in prompt_text
-    assert "opus - broad architecture refactor" in prompt_text
-    # C1a: Scope line must NOT appear
-    assert "Scope:" not in prompt_text
-    # Worker Model must be between Goal and Task
-    goal_idx = prompt_text.find("## Goal")
-    wm_idx = prompt_text.find("## Worker Model")
-    task_idx = prompt_text.find("## Task")
-    assert goal_idx != -1 and wm_idx != -1 and task_idx != -1
-    assert goal_idx < wm_idx < task_idx
 
 
 def test_plan_round_survives_backslashes_in_worker_model_reason(tmp_repo: Path) -> None:
@@ -206,13 +153,10 @@ def test_plan_round_survives_backslashes_in_worker_model_reason(tmp_repo: Path) 
     ])
     r = _run(["plan-round", "--run", run_id], cwd=tmp_repo, env_overrides=env)
     assert r.returncode == 0, r.stderr
-    pr = tmp_repo / ".agent-loop" / "runs" / run_id / "rounds" / "01" / "claude-prompt.md"
-    prompt_text = pr.read_text(encoding="utf-8")
-    # Reason is preserved verbatim (backslashes intact) in the prompt body.
-    assert reason in prompt_text
-    assert "## Worker Model" in prompt_text
-    # C1a: Scope line must NOT appear
-    assert "Scope:" not in prompt_text
+    # Reason is preserved verbatim (backslashes intact) in the round plan JSON.
+    rp = tmp_repo / ".agent-loop" / "runs" / run_id / "rounds" / "01" / "round_plan.json"
+    plan_json = json.loads(rp.read_text(encoding="utf-8"))
+    assert plan_json["worker_model_reason"] == reason
 
 
 def test_plan_round_collapses_multiline_worker_model_reason(tmp_repo: Path) -> None:
@@ -251,26 +195,6 @@ def test_plan_round_collapses_multiline_worker_model_reason(tmp_repo: Path) -> N
     assert "\n" not in stored_reason
     assert "## Injected Heading" in stored_reason  # text preserved, just inlined
 
-    pr = tmp_repo / ".agent-loop" / "runs" / run_id / "rounds" / "01" / "claude-prompt.md"
-    prompt_text = pr.read_text(encoding="utf-8")
-
-    # C1a: the block has exactly two content lines (model+reason, Reasoning Effort)
-    # with no Scope line.
-    import re
-    m = re.search(
-        r"^##\s+Worker\s+Model\s*\n(.+?)\n(Reasoning Effort:\s+\S+)\s*$",
-        prompt_text,
-        re.MULTILINE,
-    )
-    assert m is not None, prompt_text
-    reason_line = m.group(1)
-    effort_line = m.group(2)
-    assert "\n" not in reason_line
-    assert effort_line.startswith("Reasoning Effort:")
-    assert "sonnet -" in reason_line
-    # C1a: no Scope line
-    assert "Scope:" not in prompt_text
-
 
 def test_plan_round_handles_non_json_model_selection(tmp_repo: Path) -> None:
     """If Codex returns garbage for the merged envelope call, plan-round must
@@ -290,12 +214,6 @@ def test_plan_round_handles_non_json_model_selection(tmp_repo: Path) -> None:
     assert js["worker_model"] == "sonnet"  # config default
     # C1a: no scope key in output
     assert "scope" not in js
-    pr = tmp_repo / ".agent-loop" / "runs" / run_id / "rounds" / "01" / "claude-prompt.md"
-    prompt_text = pr.read_text(encoding="utf-8")
-    assert "## Worker Model" in prompt_text
-    assert "sonnet" in prompt_text
-    # C1a: no Scope line
-    assert "Scope:" not in prompt_text
     # B1: round_plan.json must have parse_failed=True
     rp = tmp_repo / ".agent-loop" / "runs" / run_id / "rounds" / "01" / "round_plan.json"
     plan_json = json.loads(rp.read_text(encoding="utf-8"))
@@ -522,10 +440,9 @@ def test_plan_round_prompt_asks_codex_for_subtasks(tmp_repo: Path) -> None:
 
 
 def test_plan_round_respects_custom_allowed_efforts(tmp_repo: Path) -> None:
-    """Custom [worker_reasoning].allowed in repo config must be enforced by
-    _render_worker_model_block. When a custom allowed list removes 'medium',
-    an invalid effort value must fall back to the config default, and the
-    rendered Worker Model block must reflect the configured value."""
+    """Custom [worker_reasoning].allowed in repo config must be enforced.
+    When a custom allowed list removes 'medium', an invalid effort value must
+    fall back to the config default in round_plan.json."""
     r1 = _run(["init-run", "--goal", "g", "--slug", "s"], cwd=tmp_repo)
     run_id = json.loads(r1.stdout)["run_id"]
     plan = tmp_repo / ".agent-loop" / "runs" / run_id / "plan.md"
@@ -567,51 +484,6 @@ def test_plan_round_respects_custom_allowed_efforts(tmp_repo: Path) -> None:
     rp = tmp_repo / ".agent-loop" / "runs" / run_id / "rounds" / "01" / "round_plan.json"
     plan_json = json.loads(rp.read_text(encoding="utf-8"))
     assert plan_json["reasoning_effort"] == "low"
-
-    # The rendered prompt must include the normalized effort in the Worker Model block.
-    pr = tmp_repo / ".agent-loop" / "runs" / run_id / "rounds" / "01" / "claude-prompt.md"
-    prompt_text = pr.read_text(encoding="utf-8")
-    assert "## Worker Model" in prompt_text
-    assert "Reasoning Effort: low" in prompt_text
-    # "medium" must NOT appear in the effort line.
-    lines = prompt_text.split("\n")
-    effort_lines = [l for l in lines if "Reasoning Effort:" in l]
-    assert len(effort_lines) == 1
-    assert "low" in effort_lines[0] and "medium" not in effort_lines[0]
-
-
-def test_render_worker_model_block_invalid_effort_uses_configured_fallback() -> None:
-    """Direct test of _render_worker_model_block with invalid reasoning_effort.
-
-    When allowed_efforts excludes 'medium' and an invalid reasoning_effort is
-    provided, the fallback must use an allowed value, not hardcoded 'medium'.
-    This ensures custom [worker_reasoning].allowed configurations are respected."""
-    from agent_loop.cli import _render_worker_model_block
-
-    # Test case 1: allowed=["low", "high"], invalid effort -> should use "low"
-    round_plan = {
-        "worker_model": "haiku",
-        "worker_model_reason": "test reason",
-        "reasoning_effort": "medium",  # Invalid under this allowed list
-    }
-    block = _render_worker_model_block(round_plan, allowed_efforts=["low", "high"])
-    assert "## Worker Model" in block
-    assert "Reasoning Effort: low" in block
-    assert "medium" not in block
-    # C1a: no Scope line in the rendered block
-    assert "Scope:" not in block
-
-    # Test case 2: allowed=["high"], invalid effort -> should use "high"
-    block = _render_worker_model_block(round_plan, allowed_efforts=["high"])
-    assert "Reasoning Effort: high" in block
-    assert "medium" not in block
-    assert "low" not in block
-
-    # Test case 3: allowed=["low", "medium", "high"], invalid effort -> should use "medium"
-    round_plan_extreme = dict(round_plan)
-    round_plan_extreme["reasoning_effort"] = "extreme"
-    block = _render_worker_model_block(round_plan_extreme, allowed_efforts=["low", "medium", "high"])
-    assert "Reasoning Effort: medium" in block
 
 
 # ---------------------------------------------------------------------------
@@ -1119,19 +991,6 @@ def test_no_scope_key_in_round_plan_json(tmp_repo: Path) -> None:
     assert not re.search(r'"scope"\s*:', raw), \
         f"'scope' key found in round_plan.json: {raw[:500]}"
 
-
-def test_no_scope_in_worker_model_block() -> None:
-    """C1a: _render_worker_model_block must not include a 'Scope:' line."""
-    from agent_loop.cli import _render_worker_model_block
-
-    round_plan = {
-        "worker_model": "sonnet",
-        "worker_model_reason": "test",
-        "reasoning_effort": "medium",
-    }
-    block = _render_worker_model_block(round_plan)
-    assert "Scope:" not in block
-    assert "scope" not in block.lower().replace("_scope", "")
 
 
 def test_no_scope_in_subtasks_block() -> None:

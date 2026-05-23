@@ -248,11 +248,8 @@ def _normalize_reason(raw: object) -> str:
     """Collapse a Codex-supplied reason to a safe single line.
 
     Codex sometimes returns multiline JSON values for ``worker_model_reason``.
-    A multiline reason would leak ``##`` headings into the worker prompt and
-    push ``Scope:`` outside the canonical ``## Worker Model`` section, so we
-    collapse all whitespace runs (including newlines and tabs) to a single
-    space before storing the reason. An empty or falsy value falls back to a
-    fixed default sentence.
+    Collapse all whitespace runs (including newlines and tabs) to a single
+    space before storing. An empty or falsy value falls back to a fixed default.
     """
     if raw is None:
         return "default model selected"
@@ -531,42 +528,6 @@ def _parse_round_plan(raw: str, *, round_n: int, allowed_models: list[str],
     }
 
 
-def _render_worker_model_block(round_plan: dict, allowed_efforts: list[str] | None = None) -> str:
-    """Render the canonical ## Worker Model section for a worker prompt.
-
-    Kept short and parseable: one model token + one-sentence reason on one line,
-    and an explicit reasoning-effort line. The worker scans for this block to
-    decide how hard to think; the supervisor uses it to confirm routing.
-
-    Defensively re-normalizes ``worker_model_reason`` so even ad-hoc callers
-    that build the dict without going through ``_parse_round_plan`` cannot
-    inject extra markdown headings via newlines. ``reasoning_effort`` is
-    constrained to config-derived allowed_efforts before rendering for the same
-    reason; an unrecognized value uses the first allowed effort, or ``medium``
-    if it is in the allowed set, ensuring compatibility with custom configs.
-
-    The ``scope`` axis has been removed (C1a). Only ``worker_model`` and
-    ``reasoning_effort`` remain as routing axes.
-
-    Args:
-        round_plan: The normalized round plan dict with routing and effort values.
-        allowed_efforts: List of allowed reasoning-effort values from config.
-                        If None, defaults to ``["low", "medium", "high"]``.
-    """
-    if allowed_efforts is None:
-        allowed_efforts = ["low", "medium", "high"]
-    model = round_plan.get("worker_model", "sonnet")
-    reason = _normalize_reason(round_plan.get("worker_model_reason"))
-    effort = round_plan.get("reasoning_effort", "medium")
-    if not isinstance(effort, str) or effort not in allowed_efforts:
-        # Fallback: prefer "medium" if allowed, otherwise use first allowed effort.
-        effort = "medium" if "medium" in allowed_efforts else (allowed_efforts[0] if allowed_efforts else "medium")
-    return (
-        "## Worker Model\n"
-        f"{model} - {reason}\n"
-        f"Reasoning Effort: {effort}\n"
-    )
-
 
 def _render_subtasks_block(subtasks: list[dict]) -> str:
     """Render a human-readable ### Subtasks (this round) markdown block.
@@ -599,9 +560,8 @@ def _render_subtasks_block(subtasks: list[dict]) -> str:
 def _inject_subtasks_section(prompt_text: str, subtasks: list[dict]) -> str:
     """Inject the ### Subtasks block after ## Task (this round) and before ## Required Reading.
 
-    Mirrors the existing ## Worker Model injection pattern. If subtasks is
-    empty, the prompt is returned unchanged. If the block is already present
-    (idempotent re-injection), it is not duplicated.
+    Returns the prompt unchanged if subtasks is empty. Idempotent if the block
+    is already present.
     """
     import re as _re
 
@@ -629,62 +589,6 @@ def _inject_subtasks_section(prompt_text: str, subtasks: list[dict]) -> str:
     return prompt_text + "\n" + block
 
 
-def _ensure_worker_model_section(prompt_text: str, round_plan: dict, allowed_efforts: list[str] | None = None) -> str:
-    """Guarantee the worker prompt has a ## Worker Model section that matches.
-
-    Codex sometimes omits the section, mislabels the model, or drifts away from
-    the JSON we already normalized. We rewrite the section so the worker prompt
-    is always the single source of truth for model routing.
-
-    - If a `## Worker Model` heading exists, replace its body (up to the next
-      `## ` heading or EOF) with the canonical block.
-    - Otherwise insert the canonical block immediately after the `## Goal`
-      section (or before `## Task (this round)` if Goal is missing, or at the
-      top of the document if neither anchor is present).
-
-    Args:
-        prompt_text: The worker prompt markdown text.
-        round_plan: The normalized round plan dict with routing and effort values.
-        allowed_efforts: List of allowed reasoning-effort values from config.
-                        If None, defaults to ``["low", "medium", "high"]``.
-    """
-    import re as _re
-
-    canonical = _render_worker_model_block(round_plan, allowed_efforts=allowed_efforts).rstrip() + "\n"
-    text = prompt_text or ""
-
-    heading_re = _re.compile(
-        r"^##\s+Worker\s+Model\s*\n.*?(?=^##\s+|\Z)",
-        _re.MULTILINE | _re.DOTALL,
-    )
-    if heading_re.search(text):
-        # Use a callable replacement so backslashes or ``\g<...>`` sequences
-        # inside the canonical block (which embeds a Codex-supplied reason --
-        # e.g. a Windows path like ``C:\Users\name``) cannot be reinterpreted
-        # by ``re.sub`` as replacement escapes. A callable replacement bypasses
-        # the entire template-substitution layer.
-        replacement = canonical + "\n"
-        return heading_re.sub(lambda _m: replacement, text, count=1)
-
-    # No Worker Model section -- inject after Goal, or before Task, or prepend.
-    goal_re = _re.compile(
-        r"(^##\s+Goal\s*\n.*?)(?=^##\s+|\Z)",
-        _re.MULTILINE | _re.DOTALL,
-    )
-    m = goal_re.search(text)
-    if m:
-        end = m.end()
-        return text[:end] + "\n" + canonical + "\n" + text[end:]
-
-    task_re = _re.compile(r"^##\s+Task\b", _re.MULTILINE)
-    m = task_re.search(text)
-    if m:
-        start = m.start()
-        return text[:start] + canonical + "\n" + text[start:]
-
-    # Last resort -- prepend so the worker still sees it.
-    prefix = canonical + "\n"
-    return prefix + text if text else prefix
 
 
 def _compact_round_artifacts(rd: _Path, *, keep_diff: bool) -> list[str]:
@@ -960,7 +864,6 @@ Commit decision rules:
         round_dir_rel=round_dir_rel,
     )
     prompt_body = render_claude_prompt(ctx)
-    prompt_body = _ensure_worker_model_section(prompt_body, round_plan, allowed_efforts=allowed_efforts)
     prompt_body = _inject_subtasks_section(prompt_body, round_plan.get("subtasks", []))
 
     rd = run_dir / "rounds" / f"{next_n:02d}"

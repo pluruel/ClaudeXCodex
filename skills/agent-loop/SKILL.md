@@ -63,10 +63,6 @@ character** of the round — used for the user-facing announce line and as the f
 model when `subtasks` is missing or invalid. The per-subtask `model` and
 `reasoning_effort` fields govern actual dispatch when `subtasks` is present and valid.
 
-The CLI ALSO injects a canonical `## Worker Model` section into `claude-prompt.md`,
-so each worker subagent sees the routing decision that applies to it, regardless of
-whether the host supports per-call model overrides.
-
 ### Subtask roles and dispatch rules
 
 When `subtasks` is present and valid, the round is decomposed into typed subtasks:
@@ -112,11 +108,7 @@ plan emitted.
 
 ### How to act on the round-level fields
 
-- Use `worker_model` and `reasoning_effort` for the announce line (step 3 of round loop).
-- Always paste `worker_model`, `worker_model_reason`, and `reasoning_effort`
-  verbatim into the worker prompt's leading lines — or into each subtask prompt — as a
-  visible reminder. The CLI-injected `## Worker Model` section inside `claude-prompt.md`
-  is the durable record.
+- Use `worker_model`, `worker_model_reason`, and `reasoning_effort` for the announce line (step 3 of round loop).
 
 ### Single-worker fallback
 
@@ -224,8 +216,6 @@ For each round N (starting at 1):
          .../rounds/NN/progress.md.
        - Do NOT run record-diff, mark-worker-done, or write claude-result.md.
 
-       Codex selected dominant model: <worker_model>
-       Reason: <worker_model_reason>
        Reasoning effort: <subtask.reasoning_effort>
 
        Required Reading (in order):
@@ -277,8 +267,6 @@ For each round N (starting at 1):
        - Append design decisions to .../shared/decisions.md.
        - Append open questions to .../shared/open-questions.md.
 
-       Codex selected dominant model: <worker_model>
-       Reason: <worker_model_reason>
        Reasoning effort: <subtask.reasoning_effort>
 
        Context from analysis phase: see .agent-loop/runs/<run_id>/shared/
@@ -352,8 +340,6 @@ For each round N (starting at 1):
      description: "Worker round N for <run_id>"
      model: <worker_model>   # haiku | sonnet | opus — drop if host rejects per-call model
      prompt: |
-       Codex selected worker model: <worker_model>
-       Reason: <worker_model_reason>
        Reasoning Effort: <reasoning_effort>
        Read .agent-loop/runs/<run_id>/rounds/NN/claude-prompt.md and implement
        what it specifies. Strict rules:
