@@ -2,6 +2,12 @@
 # Override per-repo by creating `<target_repo>/.agent-loop/config.toml`
 # with the same shape.
 
+[artifacts]
+# compact keeps durable artifacts and removes transient diff/progress files
+# after successful review.
+# debug preserves transient stats/diff/progress files per round.
+mode = "compact"
+
 [safety.bash_block]
 patterns = [
   "^\\s*git\\s+(commit|push|merge|rebase|reset\\s+--hard|clean\\s+-f)",

@@ -17,7 +17,7 @@ description: Schema reference for the per-round memo that `review-round` auto-ap
    - `## Risks` bullets (up to 3) → `Top risks`
    - `## Carry-Forward For Next Round` bullets (up to 3) → `Carry forward`
 3. Derives `Sensitive` from `safety_flags` (yes if `diff_has_sensitive`, else none).
-4. Derives `Diff size` from `diff-stats.json` (`files=N, +X/-Y`).
+4. Derives `Diff size` from the in-memory diff stats (`files=N, +X/-Y`). In debug mode those stats are also written to `diff-stats.json`.
 5. Composes the block below and appends to `<run_dir>/memo.md` idempotently (skips append if a `## Round N -` heading for the same round is already present).
 6. Advances state to `memo_written` → `completed`.
 

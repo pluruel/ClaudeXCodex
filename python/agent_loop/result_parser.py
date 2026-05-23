@@ -19,6 +19,7 @@ class ClaudeResult:
     decision_hint: DecisionHint = "incomplete"
     open_questions: list[str] = field(default_factory=list)
     requested_reading: list[str] = field(default_factory=list)
+    plan_deviations: list[str] = field(default_factory=list)
     requires_user: bool = False
 
 
@@ -72,6 +73,8 @@ def parse_result(path: Path) -> ClaudeResult:
         r.open_questions = _bullets(sec["open questions"])
     if "requested reading" in sec:
         r.requested_reading = _bullets(sec["requested reading"])
+    if "plan deviations" in sec:
+        r.plan_deviations = _bullets(sec["plan deviations"])
     if "requires user" in sec:
         r.requires_user = _scalar(sec["requires user"]).lower() == "true"
     return r

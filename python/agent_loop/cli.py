@@ -149,6 +149,8 @@ from pathlib import Path as _Path
 
 from agent_loop.run_state import RunState
 
+ArtifactMode = str
+
 
 def _run_dir(repo: _Path, run_id: str) -> _Path:
     return repo / ".agent-loop" / "runs" / run_id
@@ -171,6 +173,45 @@ def _unique_run_id(repo: _Path, slug: str) -> str:
 
 def _emit(obj) -> None:
     print(_json.dumps(obj, indent=2))
+
+
+def _load_config(repo: _Path) -> dict:
+    import tomllib
+
+    default_path = _Path(__file__).resolve().parents[2] / "config" / "defaults.toml"
+    data: dict = {}
+    if default_path.exists():
+        data = tomllib.loads(default_path.read_text(encoding="utf-8"))
+
+    local_path = repo / ".agent-loop" / "config.toml"
+    if local_path.exists():
+        local = tomllib.loads(local_path.read_text(encoding="utf-8"))
+        for key, value in local.items():
+            if isinstance(value, dict) and isinstance(data.get(key), dict):
+                data[key] = {**data[key], **value}
+            else:
+                data[key] = value
+    return data
+
+
+def _artifact_mode(cfg: dict) -> ArtifactMode:
+    mode = cfg.get("artifacts", {}).get("mode", "compact")
+    if mode not in ("compact", "debug"):
+        raise ValueError(f"invalid artifacts.mode {mode!r}; expected 'compact' or 'debug'")
+    return mode
+
+
+def _compact_round_artifacts(rd: _Path, *, keep_diff: bool) -> list[str]:
+    removed: list[str] = []
+    names = ["diff-stats.json", "progress.md"]
+    if not keep_diff:
+        names.append("diff.patch")
+    for name in names:
+        path = rd / name
+        if path.exists():
+            path.unlink()
+            removed.append(name)
+    return removed
 
 
 @register("init-run")
@@ -256,6 +297,8 @@ Write ONLY the prompt body (markdown). It MUST include these sections:
 - ## Carry-Forward From Previous Round
 - ## Goal
 - ## Task (this round)
+- ## Execution Plan
+- ## Acceptance Criteria
 - ## Required Reading (read these first, in order)
 - ## Suggested Reading (only if needed)
 - ## Out of Scope (do not Read/Edit/Write)
@@ -266,6 +309,18 @@ Write ONLY the prompt body (markdown). It MUST include these sections:
 - ## claude-result.md schema
 
 Use the goal, plan, memo, and previous review payload (if any) to fill these in.
+Make the Execution Plan concrete enough that the worker can mostly execute it
+without re-planning: name likely files, exact edits, tests, and verification
+commands when inferable. Keep it scoped to one round.
+
+Acceptance Criteria must be checkable bullets. Include expected tests or manual
+verification.
+
+The worker may deviate from the Execution Plan only when reading the code shows
+the plan is wrong or incomplete. In that case, the prompt must require the
+worker to record the deviation and reason under `## Plan Deviations` in
+`claude-result.md`.
+
 Keep Required Reading to <= 4 paths. Out of Scope must cover unrelated top-level dirs.
 
 ## Goal
@@ -369,7 +424,6 @@ def _append_memo_idempotent(memo_path: _Path, round_n: int, block: str) -> bool:
 @register("review-round")
 def _cmd_review_round(args) -> int:
     import re
-    import tomllib
     from agent_loop.codex_client import call_codex, CodexCallError
     from agent_loop.diff_capture import compute_stats
     from agent_loop.payload import build_review_payload
@@ -381,10 +435,9 @@ def _cmd_review_round(args) -> int:
     run_dir = _run_dir(repo, args.run)
     rd = run_dir / "rounds" / f"{args.round:02d}"
 
-    cfg_path = repo / ".agent-loop" / "config.toml"
-    if not cfg_path.exists():
-        cfg_path = _Path(__file__).resolve().parents[2] / "config" / "defaults.toml"
-    safety_cfg_data = tomllib.loads(cfg_path.read_text(encoding="utf-8")) if cfg_path.exists() else {}
+    cfg = _load_config(repo)
+    artifact_mode = _artifact_mode(cfg)
+    safety_cfg_data = cfg
     safety = SafetyConfig(
         bash_block_patterns=safety_cfg_data.get("safety", {}).get("bash_block", {}).get("patterns", []),
         sensitive_path_patterns=safety_cfg_data.get("safety", {}).get("sensitive_paths", {}).get("patterns", []),
@@ -397,7 +450,8 @@ def _cmd_review_round(args) -> int:
         diff_path.write_text("", encoding="utf-8")
     diff = diff_path.read_text(encoding="utf-8")
     stats = compute_stats(diff, sensitive_patterns=safety.sensitive_path_patterns)
-    (rd / "diff-stats.json").write_text(_json.dumps(stats.__dict__, indent=2), encoding="utf-8")
+    if artifact_mode == "debug":
+        (rd / "diff-stats.json").write_text(_json.dumps(stats.__dict__, indent=2), encoding="utf-8")
 
     safety_flags: list[str] = ["diff_has_sensitive"] if stats.sensitive_hits else []
     safety_flags += classify_diff_size(
@@ -476,6 +530,9 @@ Decision rules:
 
 ## Claude's Result Report
 {result_md}
+
+## Plan Deviations
+{chr(10).join("- " + item for item in result.plan_deviations) if result.plan_deviations else "(none reported)"}
 """
     try:
         res = call_codex(meta_prompt)
@@ -511,6 +568,10 @@ Decision rules:
     rs._round(args.round).ended_at = _dt.datetime.utcnow().isoformat()
     rs.save(run_dir / "state.json")
 
+    artifacts_removed: list[str] = []
+    if artifact_mode == "compact" and decision != "STOP_FOR_USER" and not safety_flags:
+        artifacts_removed = _compact_round_artifacts(rd, keep_diff=False)
+
     _emit({
         "decision": decision,
         "review_path": str(rd / "codex-review.md"),
@@ -518,6 +579,8 @@ Decision rules:
         "safety_flags": safety_flags,
         "memo_appended": appended,
         "memo_path": str(memo_path),
+        "artifact_mode": artifact_mode,
+        "artifacts_removed": artifacts_removed,
     })
     return 0
 

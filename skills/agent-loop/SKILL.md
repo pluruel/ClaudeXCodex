@@ -39,6 +39,21 @@ Skip this preflight only if you've already verified both deps earlier in the sam
 
 This plugin ships schema docs at `${CLAUDE_PLUGIN_ROOT}/skills/references/` for the curious. **The supervisor does not need to read them** — the CLI takes care of all schema generation/validation. Read them only if you're debugging unexpected JSON output from a subcommand.
 
+## Artifact mode
+
+The default artifact mode is `compact`. After a clean review, the CLI keeps the
+durable files (`claude-prompt.md`, `claude-result.md`, `codex-review.md`, and
+`review-payload.json`, plus the run-level state/memo/report files) and removes
+intermediate files such as `diff.patch`, `diff-stats.json`, and `progress.md`.
+
+If a run needs deep debugging, the user can create `.agent-loop/config.toml` in
+the target repo with:
+
+```toml
+[artifacts]
+mode = "debug"
+```
+
 ## Context discipline (mandatory)
 
 - You never read full diffs, test logs, claude-result.md, claude-prompt.md, or codex-review.md. Not even "one quick pass." The memo is auto-composed by `review-round`; you have no reason to open the review file.
@@ -80,6 +95,9 @@ For each round N (starting at 1):
        - Append open questions to .agent-loop/runs/<run_id>/shared/open-questions.md.
        - At the end, write .agent-loop/runs/<run_id>/rounds/NN/claude-result.md
          following the schema in your prompt.
+       - Treat the prompt's Execution Plan as the default path. If code reading
+         proves it wrong or incomplete, make the smallest justified deviation
+         and record it under Plan Deviations in claude-result.md.
        - Run: `"${CLAUDE_PLUGIN_ROOT}/bin/agent-loop" record-diff --run <run_id> --round N --baseline <baseline>`
        - Run: `"${CLAUDE_PLUGIN_ROOT}/bin/agent-loop" mark-worker-done --run <run_id> --round N`
        - Forbidden: git commit, git push, rm -rf, sudo, db migrations,

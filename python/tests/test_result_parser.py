@@ -31,6 +31,9 @@ completed
 - src/sessions/store.py
 - tests/conftest.py
 
+## Plan Deviations
+- Used existing session helper instead of adding a new one.
+
 ## Requires User
 false
 """
@@ -48,6 +51,7 @@ def test_parse_complete_result(tmp_path: Path) -> None:
     assert r.decision_hint == "completed"
     assert r.open_questions == ["refresh token 처리는 다음 라운드?"]
     assert r.requested_reading == ["src/sessions/store.py", "tests/conftest.py"]
+    assert r.plan_deviations == ["Used existing session helper instead of adding a new one."]
     assert r.requires_user is False
 
 

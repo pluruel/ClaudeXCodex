@@ -51,6 +51,10 @@ def test_review_round_emits_decision(tmp_repo: Path, codex_stub) -> None:
     js = json.loads(r.stdout)
     assert js["decision"] == "APPROVE"
     assert (rd / "codex-review.md").exists()
+    assert js["artifact_mode"] == "compact"
+    assert not (rd / "diff.patch").exists()
+    assert not (rd / "diff-stats.json").exists()
+    assert (rd / "review-payload.json").exists()
 
     state2 = json.loads(state_p.read_text(encoding="utf-8"))
     assert state2["rounds"][-1]["decision"] == "APPROVE"
@@ -62,3 +66,59 @@ def test_review_round_emits_decision(tmp_repo: Path, codex_stub) -> None:
         encoding="utf-8"
     )
     assert "## Round 1 - APPROVE" in memo_text
+
+
+def test_review_round_debug_mode_preserves_intermediate_artifacts(
+    tmp_repo: Path, codex_stub
+) -> None:
+    (tmp_repo / ".agent-loop").mkdir(exist_ok=True)
+    (tmp_repo / ".agent-loop" / "config.toml").write_text(
+        "[artifacts]\nmode = \"debug\"\n",
+        encoding="utf-8",
+    )
+    r1 = _run(["init-run", "--goal", "g", "--slug", "s"], cwd=tmp_repo)
+    run_id = json.loads(r1.stdout)["run_id"]
+    rd = tmp_repo / ".agent-loop" / "runs" / run_id / "rounds" / "01"
+    rd.mkdir(parents=True)
+    (rd / "claude-result.md").write_text(
+        "# Claude Result\n\n## Summary\ndid stuff\n\n## Test Outcome\npass\n\n## Decision Hint\ncompleted\n\n## Requires User\nfalse\n",
+        encoding="utf-8",
+    )
+    (rd / "diff.patch").write_text(
+        "diff --git a/a.txt b/a.txt\n--- a/a.txt\n+++ b/a.txt\n@@ -0,0 +1 @@\n+hi\n",
+        encoding="utf-8",
+    )
+
+    state_p = tmp_repo / ".agent-loop" / "runs" / run_id / "state.json"
+    state = json.loads(state_p.read_text(encoding="utf-8"))
+    state["rounds"].append({
+        "n": 1, "phase": "claude_completed", "decision": None,
+        "memo_lines": None, "started_at": "t", "ended_at": None,
+    })
+    state["current_round"] = 1
+    state_p.write_text(json.dumps(state), encoding="utf-8")
+
+    env = codex_stub(
+        "# Codex Review -- Round 1\n\n## Decision\nAPPROVE\n\n## Findings\n- none\n"
+    )
+    r = _run(["review-round", "--run", run_id, "--round", "1"],
+             cwd=tmp_repo, env_overrides=env)
+    assert r.returncode == 0, r.stderr
+    js = json.loads(r.stdout)
+    assert js["artifact_mode"] == "debug"
+    assert (rd / "diff.patch").exists()
+    assert (rd / "diff-stats.json").exists()
+    assert (rd / "review-payload.json").exists()
+
+
+def test_review_round_rejects_invalid_artifact_mode(tmp_repo: Path) -> None:
+    (tmp_repo / ".agent-loop").mkdir(exist_ok=True)
+    (tmp_repo / ".agent-loop" / "config.toml").write_text(
+        "[artifacts]\nmode = \"deubg\"\n",
+        encoding="utf-8",
+    )
+    r1 = _run(["init-run", "--goal", "g", "--slug", "s"], cwd=tmp_repo)
+    run_id = json.loads(r1.stdout)["run_id"]
+    r = _run(["review-round", "--run", run_id, "--round", "1"], cwd=tmp_repo)
+    assert r.returncode != 0
+    assert "invalid artifacts.mode" in r.stderr

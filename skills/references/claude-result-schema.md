@@ -27,6 +27,9 @@ completed | incomplete | blocked
 ## Requested Reading
 - ...
 
+## Plan Deviations
+- <what changed from the Codex execution plan and why; use `- none` if none>
+
 ## Requires User
 true | false
 ```

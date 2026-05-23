@@ -1,6 +1,6 @@
 # agent-loop — Claude Code plugin for review loops with Codex
 
-A Claude Code plugin where the interactive Claude session is the supervisor, dispatching worker subagents via the Task tool and using Codex CLI (headless `codex exec --json`) for planning and review. All artifacts go to `.agent-loop/runs/<id>/`.
+A Claude Code plugin where the interactive Claude session is the supervisor, dispatching worker subagents via the Task tool and using Codex CLI (headless `codex exec --json`) for planning and review. Durable artifacts go to `.agent-loop/runs/<id>/`; compact mode removes diff stats, progress logs, and diff patches after a clean review.
 
 ## Repo layout
 
@@ -9,6 +9,22 @@ A Claude Code plugin where the interactive Claude session is the supervisor, dis
 - `skills/` — plugin skills (`agent-loop/`, `references/`)
 - `config/` — packaged plugin defaults (e.g. `defaults.toml`)
 - `python/` — Python core (`python -m agent_loop` CLI, codex subprocess wrapper, state, safety)
+
+## Artifact modes
+
+Default compact mode keeps the human-facing record small:
+
+- `goal.md`, `plan.md`, `memo.md`, `state.json`, `final-report.md`
+- per round: `claude-prompt.md`, `claude-result.md`, `codex-review.md`, `review-payload.json`
+
+Debug mode additionally preserves intermediate files such as `diff.patch`,
+`diff-stats.json`, and worker `progress.md`. Enable it per target repo:
+
+```toml
+# .agent-loop/config.toml
+[artifacts]
+mode = "debug"
+```
 
 ## Install
 

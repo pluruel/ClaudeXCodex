@@ -19,6 +19,7 @@ def test_build_review_payload_writes_and_returns(tmp_path: Path) -> None:
         decision_hint="completed",
         open_questions=["refresh tokens?"],
         requested_reading=["src/sessions/store.py"],
+        plan_deviations=["reused existing helper"],
         requires_user=False,
     )
     stats = DiffStats(
@@ -49,6 +50,7 @@ def test_build_review_payload_writes_and_returns(tmp_path: Path) -> None:
     assert payload["goal_summary"] == "Add JWT auth"
     assert payload["claude_decision_hint"] == "completed"
     assert payload["result_summary"]["changed_files"] == ["src/auth/middleware.py"]
+    assert payload["result_summary"]["plan_deviations"] == ["reused existing helper"]
     assert payload["diff_summary"]["files_changed"] == 1
     assert payload["safety_flags"] == ["diff_too_many_lines"]
     assert "shared_delta" in payload
@@ -71,3 +73,19 @@ def test_payload_under_size_limit(tmp_path: Path) -> None:
     )
     raw = out.read_bytes()
     assert len(raw) < 2048
+
+
+def test_build_review_payload_can_skip_disk_write(tmp_path: Path) -> None:
+    out = tmp_path / "p.json"
+    payload = build_review_payload(
+        out_path=None,
+        round_n=1,
+        goal_summary="g",
+        result=ClaudeResult(summary="s"),
+        stats=DiffStats(files_changed=0, insertions=0, deletions=0),
+        shared_delta=SharedDelta(),
+        artifact_paths={},
+        safety_flags=[],
+    )
+    assert payload["round"] == 1
+    assert not out.exists()

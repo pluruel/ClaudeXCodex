@@ -12,7 +12,7 @@ from agent_loop.shared_io import SharedDelta
 
 def build_review_payload(
     *,
-    out_path: Path,
+    out_path: Path | None = None,
     round_n: int,
     goal_summary: str,
     result: ClaudeResult,
@@ -32,6 +32,7 @@ def build_review_payload(
             "claude_notes": result.summary,
             "open_questions": result.open_questions,
             "requested_reading": result.requested_reading,
+            "plan_deviations": result.plan_deviations,
             "requires_user": result.requires_user,
         },
         "diff_summary": {
@@ -49,6 +50,7 @@ def build_review_payload(
             "open_questions": shared_delta.open_questions,
         },
     }
-    out_path.parent.mkdir(parents=True, exist_ok=True)
-    out_path.write_text(json.dumps(payload, indent=2) + "\n", encoding="utf-8")
+    if out_path is not None:
+        out_path.parent.mkdir(parents=True, exist_ok=True)
+        out_path.write_text(json.dumps(payload, indent=2) + "\n", encoding="utf-8")
     return payload
