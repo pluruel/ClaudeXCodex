@@ -604,6 +604,22 @@ def _compact_round_artifacts(rd: _Path, *, keep_diff: bool) -> list[str]:
     return removed
 
 
+def _strip_routing_metadata(text: str) -> str:
+    """Remove ## Worker Model sections from goal text before storage.
+
+    Users sometimes paste routing hints (## Worker Model, Scope:, Reasoning Effort:)
+    into the goal. These are not parsed or enforced — routing is decided by plan-round
+    JSON — so strip them to keep goal.md clean.
+    """
+    import re as _re
+    return _re.sub(
+        r"^##\s+Worker\s+Model\s*\n.*?(?=^##\s+|\Z)",
+        "",
+        text,
+        flags=_re.MULTILINE | _re.DOTALL,
+    ).strip()
+
+
 @register("init-run")
 def _cmd_init_run(args) -> int:
     repo = _Path(args.repo).resolve()
@@ -611,7 +627,8 @@ def _cmd_init_run(args) -> int:
     run_dir = _run_dir(repo, run_id)
     (run_dir / "rounds").mkdir(parents=True, exist_ok=True)
     (run_dir / "shared").mkdir(parents=True, exist_ok=True)
-    (run_dir / "goal.md").write_text(args.goal + "\n", encoding="utf-8")
+    goal = _strip_routing_metadata(args.goal)
+    (run_dir / "goal.md").write_text(goal + "\n", encoding="utf-8")
     (run_dir / "memo.md").write_text("# Round Memos\n\n", encoding="utf-8")
     rs = RunState.new(run_id=run_id, goal_path="goal.md", plan_path="plan.md")
     rs.save(run_dir / "state.json")
