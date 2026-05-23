@@ -404,7 +404,7 @@ def _parse_round_plan(raw: str, *, round_n: int, allowed_models: list[str],
     }
 
 
-def _render_worker_model_block(round_plan: dict) -> str:
+def _render_worker_model_block(round_plan: dict, allowed_efforts: list[str] | None = None) -> str:
     """Render the canonical ## Worker Model section for a worker prompt.
 
     Kept short and parseable: one model token + one-sentence reason on one line,
@@ -415,14 +415,22 @@ def _render_worker_model_block(round_plan: dict) -> str:
     Defensively re-normalizes ``worker_model_reason`` so even ad-hoc callers
     that build the dict without going through ``_parse_round_plan`` cannot
     inject extra markdown headings via newlines. ``reasoning_effort`` is
-    constrained to a small token whitelist before rendering for the same
-    reason; an unrecognized value collapses to ``medium``.
+    constrained to config-derived allowed_efforts before rendering for the same
+    reason; an unrecognized value collapses to ``medium`` (which must be in
+    allowed_efforts by config validation).
+
+    Args:
+        round_plan: The normalized round plan dict with routing and effort values.
+        allowed_efforts: List of allowed reasoning-effort values from config.
+                        If None, defaults to ``["low", "medium", "high"]``.
     """
+    if allowed_efforts is None:
+        allowed_efforts = ["low", "medium", "high"]
     model = round_plan.get("worker_model", "sonnet")
     reason = _normalize_reason(round_plan.get("worker_model_reason"))
     scope = round_plan.get("scope", "normal")
     effort = round_plan.get("reasoning_effort", "medium")
-    if not isinstance(effort, str) or effort not in ("low", "medium", "high"):
+    if not isinstance(effort, str) or effort not in allowed_efforts:
         effort = "medium"
     return (
         "## Worker Model\n"
@@ -494,7 +502,7 @@ def _inject_subtasks_section(prompt_text: str, subtasks: list[dict]) -> str:
     return prompt_text + "\n" + block
 
 
-def _ensure_worker_model_section(prompt_text: str, round_plan: dict) -> str:
+def _ensure_worker_model_section(prompt_text: str, round_plan: dict, allowed_efforts: list[str] | None = None) -> str:
     """Guarantee the worker prompt has a ## Worker Model section that matches.
 
     Codex sometimes omits the section, mislabels the model, or drifts away from
@@ -506,10 +514,16 @@ def _ensure_worker_model_section(prompt_text: str, round_plan: dict) -> str:
     - Otherwise insert the canonical block immediately after the `## Goal`
       section (or before `## Task (this round)` if Goal is missing, or at the
       top of the document if neither anchor is present).
+
+    Args:
+        prompt_text: The worker prompt markdown text.
+        round_plan: The normalized round plan dict with routing and effort values.
+        allowed_efforts: List of allowed reasoning-effort values from config.
+                        If None, defaults to ``["low", "medium", "high"]``.
     """
     import re as _re
 
-    canonical = _render_worker_model_block(round_plan).rstrip() + "\n"
+    canonical = _render_worker_model_block(round_plan, allowed_efforts=allowed_efforts).rstrip() + "\n"
     text = prompt_text or ""
 
     heading_re = _re.compile(
@@ -806,7 +820,7 @@ Keep Required Reading to <= 4 paths. Out of Scope must cover unrelated top-level
     round_plan_path.write_text(_json.dumps(round_plan, indent=2) + "\n", encoding="utf-8")
     # Write compatibility alias for tooling that still uses the hyphenated name.
     (rd / "round-plan.json").write_text(_json.dumps(round_plan, indent=2) + "\n", encoding="utf-8")
-    prompt_body = _ensure_worker_model_section(res.final_text, round_plan)
+    prompt_body = _ensure_worker_model_section(res.final_text, round_plan, allowed_efforts=allowed_efforts)
     prompt_body = _inject_subtasks_section(prompt_body, round_plan.get("subtasks", []))
     (rd / "claude-prompt.md").write_text(prompt_body, encoding="utf-8")
     rs.start_round(n=next_n, started_at=_dt.datetime.utcnow().isoformat())

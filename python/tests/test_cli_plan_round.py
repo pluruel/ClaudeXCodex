@@ -464,3 +464,59 @@ def test_plan_round_prompt_asks_codex_for_subtasks(tmp_repo: Path) -> None:
     # The key must be present (Codex was asked for it; stub provided it)
     assert "subtasks" in plan_json
     assert plan_json["subtasks"][0]["role"] == "verification"
+
+
+def test_plan_round_respects_custom_allowed_efforts(tmp_repo: Path) -> None:
+    """Custom [worker_reasoning].allowed in repo config must be enforced by
+    _render_worker_model_block. When a custom allowed list removes 'medium',
+    an invalid effort value must fall back to the config default, and the
+    rendered Worker Model block must reflect the configured value."""
+    r1 = _run(["init-run", "--goal", "g", "--slug", "s"], cwd=tmp_repo)
+    run_id = json.loads(r1.stdout)["run_id"]
+    plan = tmp_repo / ".agent-loop" / "runs" / run_id / "plan.md"
+    plan.write_text("# Plan\n\n## Tasks\n1. [ ] do A\n", encoding="utf-8")
+
+    # Create a custom config that allows only ["low", "high"] (no "medium")
+    # and sets default to "low".
+    config_dir = tmp_repo / ".agent-loop"
+    config_dir.mkdir(parents=True, exist_ok=True)
+    config_path = config_dir / "config.toml"
+    config_path.write_text(
+        '[worker_reasoning]\n'
+        'allowed = ["low", "high"]\n'
+        'default = "low"\n',
+        encoding="utf-8"
+    )
+
+    # Codex returns reasoning_effort="medium" (which is no longer allowed)
+    # and no Worker Model section in the prompt.
+    env = _codex_stub_sequence(tmp_repo, [
+        json.dumps({
+            "round": 1,
+            "worker_model": "haiku",
+            "worker_model_reason": "mechanical change",
+            "scope": "narrow",
+            "reasoning_effort": "medium",  # invalid under custom config
+            "complexity": {},
+        }),
+        "## Goal\nDo A\n\n## Task (this round)\nImplement A",
+    ])
+    r = _run(["plan-round", "--run", run_id], cwd=tmp_repo, env_overrides=env)
+    assert r.returncode == 0, r.stderr
+
+    # The round_plan.json should show the invalid "medium" was normalized to
+    # the custom default "low" by _parse_round_plan.
+    rp = tmp_repo / ".agent-loop" / "runs" / run_id / "rounds" / "01" / "round_plan.json"
+    plan_json = json.loads(rp.read_text(encoding="utf-8"))
+    assert plan_json["reasoning_effort"] == "low"
+
+    # The rendered prompt must include the normalized effort in the Worker Model block.
+    pr = tmp_repo / ".agent-loop" / "runs" / run_id / "rounds" / "01" / "claude-prompt.md"
+    prompt_text = pr.read_text(encoding="utf-8")
+    assert "## Worker Model" in prompt_text
+    assert "Reasoning Effort: low" in prompt_text
+    # "medium" must NOT appear in the effort line.
+    lines = prompt_text.split("\n")
+    effort_lines = [l for l in lines if "Reasoning Effort:" in l]
+    assert len(effort_lines) == 1
+    assert "low" in effort_lines[0] and "medium" not in effort_lines[0]
