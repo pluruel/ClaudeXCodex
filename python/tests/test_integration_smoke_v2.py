@@ -18,6 +18,25 @@ def _run(args, cwd, env_overrides=None):
                           text=True, check=False, env=env)
 
 
+def _codex_stub_sequence(tmp_repo: Path, contents: list[str]) -> dict[str, str]:
+    data_path = tmp_repo / "codex_stub_sequence.json"
+    stub_path = tmp_repo / "codex_stub_sequence.py"
+    data_path.write_text(json.dumps({"i": 0, "contents": contents}), encoding="utf-8")
+    stub_path.write_text(
+        "import json\n"
+        f"p = {str(data_path)!r}\n"
+        "data = json.load(open(p, encoding='utf-8'))\n"
+        "i = data['i']\n"
+        "content = data['contents'][i]\n"
+        "data['i'] = i + 1\n"
+        "json.dump(data, open(p, 'w', encoding='utf-8'))\n"
+        "print(json.dumps({'type': 'assistant_message', 'content': content}))\n",
+        encoding="utf-8",
+    )
+    py = sys.executable.replace("\\", "/")
+    return {"AGENT_LOOP_CODEX_BIN": f'"{py}" "{stub_path.as_posix()}"'}
+
+
 def test_e2e_claude_entry_flow(tmp_repo: Path, codex_stub) -> None:
     # 1. init-run
     r1 = _run(["init-run", "--goal", "smoke", "--slug", "smoke"], cwd=tmp_repo)
@@ -32,7 +51,17 @@ def test_e2e_claude_entry_flow(tmp_repo: Path, codex_stub) -> None:
     assert (run_dir / "plan.md").exists()
 
     # 3. plan-round (stub codex -> returns a worker prompt body)
-    env_round = codex_stub("## Task (this round)\nImplement thing")
+    env_round = _codex_stub_sequence(tmp_repo, [
+        json.dumps({
+            "round": 1,
+            "worker_model": "haiku",
+            "worker_model_reason": "simple smoke task",
+            "scope": "narrow",
+            "complexity": {"files_expected": 1, "requires_architecture": False,
+                           "requires_broad_search": False, "risk": "low"},
+        }),
+        "## Worker Model\nhaiku\n\n## Task (this round)\nImplement thing",
+    ])
     r3 = _run(["plan-round", "--run", run_id], cwd=tmp_repo, env_overrides=env_round)
     assert r3.returncode == 0, r3.stderr
     assert (run_dir / "rounds" / "01" / "claude-prompt.md").exists()

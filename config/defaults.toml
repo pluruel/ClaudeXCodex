@@ -8,6 +8,10 @@
 # debug preserves transient stats/diff/progress files per round.
 mode = "compact"
 
+[worker_models]
+allowed = ["haiku", "sonnet", "opus"]
+default = "sonnet"
+
 [safety.bash_block]
 patterns = [
   "^\\s*git\\s+(commit|push|merge|rebase|reset\\s+--hard|clean\\s+-f)",

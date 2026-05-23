@@ -26,6 +26,25 @@ Debug mode additionally preserves intermediate files such as `diff.patch`,
 mode = "debug"
 ```
 
+## Worker model selection
+
+Each `plan-round` asks Codex to choose a worker model alias for the Claude
+subagent: `haiku`, `sonnet`, or `opus`. The selection is written to
+`rounds/NN/round-plan.json` and included in the `plan-round` JSON output. If
+Claude Code supports model-specific Task dispatch in the local environment, the
+supervisor should use that model; otherwise the selected model still scopes the
+worker prompt (`haiku` = narrow/mechanical, `sonnet` = normal integration,
+`opus` = broad/high-risk work).
+
+Override the allowed/default aliases per target repo:
+
+```toml
+# .agent-loop/config.toml
+[worker_models]
+allowed = ["haiku", "sonnet", "opus"]
+default = "sonnet"
+```
+
 ## Install
 
 ### Claude Code plugin (skills)

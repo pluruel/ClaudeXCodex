@@ -201,6 +201,47 @@ def _artifact_mode(cfg: dict) -> ArtifactMode:
     return mode
 
 
+def _worker_model_config(cfg: dict) -> tuple[list[str], str]:
+    worker_cfg = cfg.get("worker_models", {})
+    allowed = worker_cfg.get("allowed", ["haiku", "sonnet", "opus"])
+    if not isinstance(allowed, list) or not all(isinstance(x, str) for x in allowed):
+        allowed = ["haiku", "sonnet", "opus"]
+    default = worker_cfg.get("default", "sonnet")
+    if default not in allowed:
+        default = allowed[0] if allowed else "sonnet"
+    return allowed, default
+
+
+def _parse_round_plan(raw: str, *, round_n: int, allowed_models: list[str],
+                      default_model: str) -> dict:
+    import re as _re
+
+    text = raw.strip()
+    if text.startswith("```"):
+        text = _re.sub(r"^```(?:json)?\s*", "", text)
+        text = _re.sub(r"\s*```$", "", text).strip()
+    try:
+        plan = _json.loads(text)
+    except _json.JSONDecodeError:
+        plan = {}
+    if not isinstance(plan, dict):
+        plan = {}
+
+    worker_model = plan.get("worker_model", default_model)
+    if worker_model not in allowed_models:
+        worker_model = default_model
+    scope = plan.get("scope", "normal")
+    if scope not in ("narrow", "normal", "broad"):
+        scope = "normal"
+    return {
+        "round": round_n,
+        "worker_model": worker_model,
+        "worker_model_reason": str(plan.get("worker_model_reason") or "default model selected"),
+        "scope": scope,
+        "complexity": plan.get("complexity") if isinstance(plan.get("complexity"), dict) else {},
+    }
+
+
 def _compact_round_artifacts(rd: _Path, *, keep_diff: bool) -> list[str]:
     removed: list[str] = []
     names = ["diff-stats.json", "progress.md"]
@@ -277,6 +318,8 @@ def _cmd_plan_round(args) -> int:
     run_dir = _run_dir(repo, args.run)
     rs = RunState.load(run_dir / "state.json")
     next_n = (rs.rounds[-1].n + 1) if rs.rounds else 1
+    cfg = _load_config(repo)
+    allowed_models, default_model = _worker_model_config(cfg)
 
     goal = (run_dir / "goal.md").read_text(encoding="utf-8").strip()
     plan_path = run_dir / "plan.md"
@@ -291,11 +334,59 @@ def _cmd_plan_round(args) -> int:
         if ppath.exists():
             last_payload = ppath.read_text(encoding="utf-8")
 
+    round_plan_prompt = f"""You are selecting the Claude worker model and scope for round {next_n}.
+
+Output ONLY JSON with this schema:
+{{
+  "round": {next_n},
+  "worker_model": "<one of: {', '.join(allowed_models)}>",
+  "worker_model_reason": "<one sentence>",
+  "scope": "narrow|normal|broad",
+  "complexity": {{
+    "files_expected": <integer>,
+    "requires_architecture": <boolean>,
+    "requires_broad_search": <boolean>,
+    "risk": "low|medium|high"
+  }}
+}}
+
+Model selection rules:
+- haiku: mechanical, 1-2 likely files, clear execution plan, clear tests, low risk.
+- sonnet: normal integration work, multiple files, pattern matching, moderate uncertainty.
+- opus: architecture, broad debugging, unclear requirements, high-risk safety/security/build/data changes.
+
+If the ideal model is unavailable, choose the closest allowed model from the list.
+
+## Goal
+{goal}
+
+## Plan
+{plan}
+
+## Memo So Far
+{memo or "(empty -- first round)"}
+
+## Previous Review Payload (round {prev_round})
+{last_payload or "(none -- first round)"}
+"""
+    try:
+        round_plan_res = call_codex(round_plan_prompt)
+    except CodexCallError as e:
+        print(f"codex error: {e}", file=sys.stderr)
+        return 1
+    round_plan = _parse_round_plan(
+        round_plan_res.final_text,
+        round_n=next_n,
+        allowed_models=allowed_models,
+        default_model=default_model,
+    )
+
     meta_prompt = f"""You are drafting the Claude worker prompt for round {next_n}.
 
 Write ONLY the prompt body (markdown). It MUST include these sections:
 - ## Carry-Forward From Previous Round
 - ## Goal
+- ## Worker Model
 - ## Task (this round)
 - ## Execution Plan
 - ## Acceptance Criteria
@@ -313,6 +404,11 @@ Make the Execution Plan concrete enough that the worker can mostly execute it
 without re-planning: name likely files, exact edits, tests, and verification
 commands when inferable. Keep it scoped to one round.
 
+Use the worker model selection to calibrate scope:
+- haiku: keep the task narrow and mechanical; Required Reading should be enough.
+- sonnet: normal integration task; allow limited Suggested Reading.
+- opus: permit broader investigation when necessary, but require reasons in Plan Deviations.
+
 Acceptance Criteria must be checkable bullets. Include expected tests or manual
 verification.
 
@@ -329,6 +425,9 @@ Keep Required Reading to <= 4 paths. Out of Scope must cover unrelated top-level
 ## Plan
 {plan}
 
+## Worker Model Selection
+{_json.dumps(round_plan, indent=2)}
+
 ## Memo So Far
 {memo or "(empty -- first round)"}
 
@@ -343,12 +442,17 @@ Keep Required Reading to <= 4 paths. Out of Scope must cover unrelated top-level
 
     rd = run_dir / "rounds" / f"{next_n:02d}"
     rd.mkdir(parents=True, exist_ok=True)
+    round_plan_path = rd / "round-plan.json"
+    round_plan_path.write_text(_json.dumps(round_plan, indent=2) + "\n", encoding="utf-8")
     (rd / "claude-prompt.md").write_text(res.final_text, encoding="utf-8")
     rs.start_round(n=next_n, started_at=_dt.datetime.utcnow().isoformat())
     rs.save(run_dir / "state.json")
     _emit({
         "round_n": next_n,
         "prompt_path": str(rd / "claude-prompt.md"),
+        "round_plan_path": str(round_plan_path),
+        "worker_model": round_plan["worker_model"],
+        "worker_model_reason": round_plan["worker_model_reason"],
         "summary": f"round {next_n} prompt drafted",
     })
     return 0

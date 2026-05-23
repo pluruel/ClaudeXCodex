@@ -54,6 +54,18 @@ the target repo with:
 mode = "debug"
 ```
 
+## Worker model selection
+
+`plan-round` emits `worker_model` (`haiku`, `sonnet`, or `opus` by default),
+`worker_model_reason`, and `round_plan_path`. Use that model for the Task
+dispatch if Claude Code exposes a model override in this environment. If no
+model override is available, still include the selected model in the worker
+prompt and let it constrain scope:
+
+- `haiku` - narrow, mechanical, mostly execute the provided plan
+- `sonnet` - normal integration work
+- `opus` - broad or high-risk work where deeper reasoning is expected
+
 ## Context discipline (mandatory)
 
 - You never read full diffs, test logs, claude-result.md, claude-prompt.md, or codex-review.md. Not even "one quick pass." The memo is auto-composed by `review-round`; you have no reason to open the review file.
@@ -74,7 +86,7 @@ mode = "debug"
 For each round N (starting at 1):
 
 1. `Bash: "${CLAUDE_PLUGIN_ROOT}/bin/agent-loop" plan-round --run <run_id>`
-   → JSON `{round_n, prompt_path, summary}`. (Codex drafted the worker prompt.)
+   → JSON `{round_n, prompt_path, round_plan_path, worker_model, worker_model_reason, summary}`. (Codex drafted the worker prompt and selected the worker model.)
 2. `Bash: "${CLAUDE_PLUGIN_ROOT}/bin/agent-loop" capture-baseline`
    → JSON `{baseline}`. Save the sha.
 3. `Bash: "${CLAUDE_PLUGIN_ROOT}/bin/agent-loop" mark-dispatched --run <run_id> --round N`
@@ -85,6 +97,8 @@ For each round N (starting at 1):
    Task tool (general-purpose):
      description: "Worker round N for <run_id>"
      prompt: |
+       Codex selected worker model: <worker_model>
+       Reason: <worker_model_reason>
        Read .agent-loop/runs/<run_id>/rounds/NN/claude-prompt.md and implement
        what it specifies. Strict rules:
        - Follow the Required Reading list in that prompt. Do NOT read Out of Scope.

@@ -11,6 +11,9 @@ The literal template for the Round N worker prompt. The Python core (`prompt_ren
 ## Goal
 {goal}
 
+## Worker Model
+{worker_model} - {worker_model_reason}
+
 ## Task (this round)
 {task}
 
