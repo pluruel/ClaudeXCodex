@@ -56,39 +56,79 @@ mode = "debug"
 
 ## Worker model selection
 
-`plan-round` emits `worker_model` (`haiku`, `sonnet`, or `opus` by default),
-`worker_model_reason`, `scope` (`narrow` | `normal` | `broad`), and
-`round_plan_path`. The CLI ALSO injects a canonical `## Worker Model` section
-into the generated `claude-prompt.md`, so the worker subagent sees the same
-routing decision even when it is dispatched without a model override.
+`plan-round` emits round-level metadata: `worker_model` (`haiku`, `sonnet`, or `opus`),
+`worker_model_reason`, `scope` (`narrow` | `normal` | `broad`),
+`reasoning_effort` (`low` | `medium` | `high`, default `medium`), `subtasks` (list),
+and `round_plan_path`. The round-level fields are the **dominant character** of the
+round — used for the user-facing announce line and as the fallback model when
+`subtasks` is missing or invalid. The per-subtask `model`, `reasoning_effort`, and
+`scope` fields govern actual dispatch when `subtasks` is present and valid.
 
-How to act on it when dispatching the Task tool:
+The CLI ALSO injects a canonical `## Worker Model` section into `claude-prompt.md`,
+so each worker subagent sees the routing decision that applies to it, regardless of
+whether the host supports per-call model overrides.
 
-1. If Claude Code exposes a per-call model override in this environment, set
-   it to the selected `worker_model`. The Task tool's accepted aliases vary
-   across environments; use whichever of `haiku` / `sonnet` / `opus` (or their
-   environment-specific full IDs) the tool accepts. If the tool rejects the
-   alias, fall back to step 2 -- do not silently route to a different model.
-2. Always paste `worker_model`, `worker_model_reason`, and `scope` verbatim
-   into the worker prompt's leading lines (see the Task dispatch sample
-   below). The CLI-injected `## Worker Model` section inside
-   `claude-prompt.md` is the durable record; the supervisor's restated lines
-   are a visible reminder.
+### Subtask roles and dispatch rules
 
-Scope-to-effort mapping (use to choose / justify the model and to constrain
-the worker even when no model override is available):
+When `subtasks` is present and valid, the round is decomposed into typed subtasks:
 
-- `narrow` + `haiku` - mechanical, mostly execute the provided plan, minimal
-  Suggested Reading
-- `normal` + `sonnet` - integration work, moderate uncertainty, limited
-  Suggested Reading allowed
-- `broad` + `opus` - architecture / broad debugging / high-risk safety or
-  security changes; deeper reasoning expected, deviations must be justified
-  in `claude-result.md`
+| role | authority | parallelism | constraint |
+|---|---|---|---|
+| `analysis` | read code/docs; write to `shared/*` only | all siblings dispatch in parallel (no `depends_on` between them) | must NOT edit source files or tests |
+| `implementation` | patch source files, tests, configs | dispatched after all declared `depends_on` analysis ids complete | must NOT write to `shared/*` as scratch; only `decisions.md`, `knowledge.md`, `open-questions.md` |
+| `verification` | run named check commands; report pass/fail | dispatched after all implementation subtasks in this round complete | must name an explicit command in its deliverable |
 
-If `scope` and `worker_model` disagree (e.g. `broad` + `haiku`), trust the
-model alias for routing but raise the mismatch with the user before
-dispatching -- this usually indicates the round plan needs another pass.
+Each subtask carries:
+- `id` — unique within the round
+- `role` — `analysis | implementation | verification`
+- `model` — the worker model alias for this subtask
+- `reasoning_effort` — `low | medium | high`
+- `scope` — `narrow | normal | broad`
+- `required_reading` — list of file paths (max 5; split the subtask if more are needed)
+- `out_of_scope` — list of paths/patterns the worker must not read or edit
+- `depends_on` — list of same-round subtask ids that must complete first
+- `deliverable` — what the subtask must produce before it is considered done
+
+### Per-subtask reasoning_effort
+
+When dispatching a subtask via the Task tool:
+
+1. If the host exposes a native `reasoning_effort` or equivalent thinking-budget
+   parameter, set it to the subtask's `reasoning_effort` value. Do not assume a
+   specific parameter name — only set it if local Claude Code docs already establish one.
+2. If the host does NOT expose a native reasoning parameter, inject the subtask's
+   `reasoning_effort` as a visible prompt line:
+   ```
+   Reasoning effort: <reasoning_effort>   # hint only — native budget not available
+   ```
+   This is the worker's only knob in that environment; keep it visible.
+
+Typical mappings (trust `plan-round`; do not rewrite):
+- `narrow` + `haiku` → `low` effort — mechanical execution, minimal reading
+- `normal` + `sonnet` → `medium` effort — integration, moderate uncertainty
+- `broad` + `opus` → `high` effort — architecture, high-risk, deviations must be justified
+
+`reasoning_effort` and `scope`/`model` are independent axes. A `narrow` subtask may
+use `high` effort if the few changes touch deep architecture; trust whatever the round
+plan emitted.
+
+### How to act on the round-level fields
+
+- Use `worker_model` and `scope` for the announce line (step 3 of round loop).
+- If `scope` and `worker_model` disagree (e.g. `broad` + `haiku`), raise the mismatch
+  with the user before dispatching.
+- Always paste `worker_model`, `worker_model_reason`, `scope`, and `reasoning_effort`
+  verbatim into the worker prompt's leading lines — or into each subtask prompt — as a
+  visible reminder. The CLI-injected `## Worker Model` section inside `claude-prompt.md`
+  is the durable record.
+
+### Single-worker fallback
+
+If `subtasks` is absent from the round plan JSON, is an empty list, or is structurally
+invalid (missing required fields), fall back to the legacy single-worker dispatch:
+dispatch one Task tool call with `claude-prompt.md` as its instructions, using the
+round-level `worker_model` and `reasoning_effort`. The fallback prompt format is
+unchanged from the original SKILL.md.
 
 ## Context discipline (mandatory)
 
@@ -116,46 +156,178 @@ For each round N (starting at 1):
 3. **Announce the round to the user** (one line, verbatim format, BEFORE dispatch):
 
    ```
-   Round N — worker: <worker_model> (<worker_model_reason>), scope: <scope>
+   Round N — worker (dominant): <worker_model> (<worker_model_reason>), scope: <scope> — subtasks: <count> (analysis×<a>, implementation×<i>, verification×<v>)
    ```
 
-   Use the values returned by `plan-round` in step 1. This is the only piece of
-   round-level routing information that surfaces to the user without them having
-   to open files; do not skip it, do not paraphrase it.
+   Use the values returned by `plan-round` in step 1. Count each role from the
+   `subtasks` list. If `subtasks` is absent or invalid, use `subtasks: 1 (fallback)`
+   for the count portion. This line is the only round-level routing information that
+   surfaces to the user without them opening files; do not skip or paraphrase it.
 
 4. `Bash: "${CLAUDE_PLUGIN_ROOT}/bin/agent-loop" mark-dispatched --run <run_id> --round N`
-   → JSON `{round, phase}`. This records that the worker handoff started.
+   → JSON `{round, phase}`. Records that worker handoff started.
 
-   ### Worker model dispatch
+5. **Dispatch worker subagent(s) via Task tool.**
 
-   The Task tool's per-call model parameter is environment-dependent. Two
-   regimes you may encounter:
+   ### 5a — Check for valid subtasks
 
-   - **Per-call `model` supported** (current Claude Code default in most
-     environments): pass `model: <worker_model>` as a top-level Task argument
-     (alongside `description` and `prompt`). The accepted aliases vary —
-     `haiku` / `sonnet` / `opus` are the canonical short forms; full IDs (e.g.
-     `claude-haiku-4-5`, `claude-sonnet-4-7`, `claude-opus-4-7`) also work
-     when the host accepts them. If the alias is rejected, do NOT silently
-     route to the default — fall back to the next bullet.
-   - **Per-call `model` NOT supported** (some embedded / restricted hosts):
-     omit the `model` field. The CLI-injected `## Worker Model` section
-     already inside `claude-prompt.md` is the durable record of which model
-     the worker is scoped to, and the leading lines of the Task prompt (see
-     example below) restate it visibly. The subagent will run on the host's
-     default model but stay scoped to the worker_model-shaped task because
-     the prompt itself was sized for that model.
+   Inspect the `subtasks` field from the `plan-round` JSON (step 1). If it is present,
+   non-empty, and each entry has at minimum `id`, `role`, `model`, `reasoning_effort`,
+   `scope`, and `deliverable`, proceed to **5b (subtask fan-out)**. Otherwise proceed
+   to **5c (single-worker fallback)**.
 
-   Either way, the `Round N — worker: …` echo line from step 3 stays visible
-   in the supervisor transcript, so the user can see the routing decision
-   regardless of which dispatch regime applies.
+   ### 5b — Subtask fan-out (default path)
 
-5. **Dispatch worker subagent via Task tool.** The subagent inherits `${CLAUDE_PLUGIN_ROOT}` from the supervisor. If the Task tool accepts a per-call model override, set it to `<worker_model>`. The subagent prompt:
+   The subagent inherits `${CLAUDE_PLUGIN_ROOT}` from the supervisor.
+
+   **Phase 1 — Analysis (parallel):**
+   Collect all subtasks with `role: analysis`. Dispatch them simultaneously as
+   independent Task tool calls (no `depends_on` between siblings). Per-subtask prompt:
+
+   ```
+   Task tool (general-purpose):
+     description: "Round N / <subtask_id> (analysis) for <run_id>"
+     model: <subtask.model>   # drop if host rejects per-call model
+     prompt: |
+       You are subtask <subtask.id> (role=analysis, model=<subtask.model>,
+       reasoning_effort=<subtask.reasoning_effort>, scope=<subtask.scope>)
+       inside agent-loop run <run_id>, round N.
+
+       Strict role rules:
+       - You are an ANALYSIS subtask. You MUST NOT modify any source code, config,
+         or docs. No Edit, no Write outside .agent-loop/runs/<run_id>/shared/ and
+         .../rounds/NN/progress.md.
+       - Do NOT run record-diff, mark-worker-done, or write claude-result.md.
+
+       Codex selected dominant model: <worker_model>
+       Reason: <worker_model_reason>
+       Scope: <subtask.scope>
+       Reasoning effort: <subtask.reasoning_effort>
+
+       Required Reading (in order):
+       <subtask.required_reading — one path per line>
+
+       Out of Scope (do not read or edit):
+       <subtask.out_of_scope — one path per line>
+
+       Deliverable: <subtask.deliverable>
+
+       When finished, APPEND to .agent-loop/runs/<run_id>/shared/decisions.md
+       (heading: ## Round N / <subtask.id> — <one-phrase summary>) and append
+       a line to .../rounds/NN/progress.md:
+         [done] <subtask.id> <deliverable summary>
+
+       Reply with EXACTLY ONE LINE:
+         OK
+       on success, or
+         FAIL: <one sentence>
+       on failure. No other output.
+   ```
+
+   Wait for ALL analysis Task tool calls to return before Phase 2.
+
+   **Phase 2 — Implementation (dependency-ordered):**
+   Collect all subtasks with `role: implementation`. Sort by `depends_on` so that
+   a subtask is dispatched only after every id in its `depends_on` list has returned
+   OK. If multiple implementation subtasks share no dependencies between each other,
+   dispatch them in parallel. Per-subtask prompt:
+
+   ```
+   Task tool (general-purpose):
+     description: "Round N / <subtask_id> (implementation) for <run_id>"
+     model: <subtask.model>   # drop if host rejects per-call model
+     prompt: |
+       You are subtask <subtask.id> (role=implementation, model=<subtask.model>,
+       reasoning_effort=<subtask.reasoning_effort>, scope=<subtask.scope>)
+       inside agent-loop run <run_id>, round N.
+
+       Strict role rules:
+       - You are an IMPLEMENTATION subtask. You MAY edit source files, tests,
+         and configs within the scope of your deliverable.
+       - Do NOT run record-diff or mark-worker-done (the supervisor calls these
+         once after all subtasks complete).
+       - Do NOT write claude-result.md (the supervisor's final implementation
+         subtask writes a consolidated result, or the supervisor writes it).
+       - Append progress to .../rounds/NN/progress.md.
+       - Append durable facts to .../shared/knowledge.md.
+       - Append design decisions to .../shared/decisions.md.
+       - Append open questions to .../shared/open-questions.md.
+
+       Codex selected dominant model: <worker_model>
+       Reason: <worker_model_reason>
+       Scope: <subtask.scope>
+       Reasoning effort: <subtask.reasoning_effort>
+
+       Context from analysis phase: see .agent-loop/runs/<run_id>/shared/
+
+       Required Reading (in order):
+       <subtask.required_reading — one path per line>
+
+       Out of Scope (do not read or edit):
+       <subtask.out_of_scope — one path per line>
+
+       Depends on (already complete): <subtask.depends_on — comma-separated ids>
+
+       Deliverable: <subtask.deliverable>
+
+       Forbidden: git commit, git push, rm -rf, sudo, db migrations,
+       writes to .env / secrets / migrations.
+
+       Reply with EXACTLY ONE LINE:
+         OK
+       on success, or
+         FAIL: <one sentence>
+       on failure. No other output.
+   ```
+
+   Wait for ALL implementation Task tool calls to return before Phase 3.
+
+   **Phase 3 — Verification (sequential or parallel as declared):**
+   Collect all subtasks with `role: verification`. Each verification subtask must
+   name an explicit check command in its `deliverable`. Dispatch them (in parallel
+   if they have no mutual dependencies). Per-subtask prompt:
+
+   ```
+   Task tool (general-purpose):
+     description: "Round N / <subtask_id> (verification) for <run_id>"
+     model: <subtask.model>   # drop if host rejects per-call model
+     prompt: |
+       You are subtask <subtask.id> (role=verification, model=<subtask.model>,
+       reasoning_effort=<subtask.reasoning_effort>, scope=<subtask.scope>)
+       inside agent-loop run <run_id>, round N.
+
+       Strict role rules:
+       - You are a VERIFICATION subtask. You MUST NOT edit source files.
+       - Run the exact command(s) specified in your deliverable. Report pass/fail
+         and captured output.
+       - Append progress to .../rounds/NN/progress.md.
+
+       Deliverable (includes named check command): <subtask.deliverable>
+
+       After all commands finish, write ONE LINE to .../rounds/NN/progress.md:
+         [done] <subtask.id> verification: <pass|fail>
+
+       Reply with EXACTLY ONE LINE:
+         OK
+       on success (all checks passed), or
+         FAIL: <one sentence describing which check failed>
+       on failure. No other output.
+   ```
+
+   **After all phases complete:**
+   Run: `"${CLAUDE_PLUGIN_ROOT}/bin/agent-loop" record-diff --run <run_id> --round N --baseline <baseline>`
+   Run: `"${CLAUDE_PLUGIN_ROOT}/bin/agent-loop" mark-worker-done --run <run_id> --round N`
+
+   ### 5c — Single-worker fallback (legacy path)
+
+   Triggered only when `subtasks` is missing, empty, or structurally invalid.
+   The subagent inherits `${CLAUDE_PLUGIN_ROOT}` from the supervisor. If the Task
+   tool accepts a per-call model override, set it to `<worker_model>`. Prompt:
 
    ```
    Task tool (general-purpose):
      description: "Worker round N for <run_id>"
-     model: <worker_model>   # haiku | sonnet | opus — drop this field if the host rejects per-call model
+     model: <worker_model>   # haiku | sonnet | opus — drop if host rejects per-call model
      prompt: |
        Codex selected worker model: <worker_model>
        Reason: <worker_model_reason>

@@ -10,8 +10,6 @@ from typing import Callable, Optional
 class SafetyConfig:
     bash_block_patterns: list[str] = field(default_factory=list)
     sensitive_path_patterns: list[str] = field(default_factory=list)
-    diff_warn_files: int = 15
-    diff_warn_lines: int = 600
 
 
 def _compile(patterns: list[str]) -> list[re.Pattern[str]]:
@@ -32,15 +30,6 @@ def check_path_sensitive(path: str, cfg: SafetyConfig) -> bool:
         if pat.search(path):
             return True
     return False
-
-
-def classify_diff_size(*, files: int, lines: int, cfg: SafetyConfig) -> list[str]:
-    flags: list[str] = []
-    if files > cfg.diff_warn_files:
-        flags.append("diff_too_many_files")
-    if lines > cfg.diff_warn_lines:
-        flags.append("diff_too_many_lines")
-    return flags
 
 
 PreToolHook = Callable[..., Optional[str]]

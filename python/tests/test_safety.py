@@ -4,7 +4,6 @@ from agent_loop.safety import (
     SafetyConfig,
     check_bash_command,
     check_path_sensitive,
-    classify_diff_size,
     make_pretool_hook,
 )
 
@@ -16,8 +15,6 @@ def _cfg() -> SafetyConfig:
             r"^\s*rm\s+-rf",
         ],
         sensitive_path_patterns=[r"\.env(\..+)?$", r"/migrations/"],
-        diff_warn_files=15,
-        diff_warn_lines=600,
     )
 
 
@@ -34,16 +31,6 @@ def test_path_sensitive() -> None:
     assert check_path_sensitive("app/.env.production", cfg) is True
     assert check_path_sensitive("src/db/migrations/0001.sql", cfg) is True
     assert check_path_sensitive("src/auth.py", cfg) is False
-
-
-def test_diff_size_warnings() -> None:
-    cfg = _cfg()
-    flags = classify_diff_size(files=20, lines=300, cfg=cfg)
-    assert "diff_too_many_files" in flags
-    flags = classify_diff_size(files=2, lines=900, cfg=cfg)
-    assert "diff_too_many_lines" in flags
-    flags = classify_diff_size(files=2, lines=100, cfg=cfg)
-    assert flags == []
 
 
 def test_pretool_hook_blocks_bash() -> None:

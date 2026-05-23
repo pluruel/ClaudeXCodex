@@ -43,7 +43,7 @@ def test_build_review_payload_writes_and_returns(tmp_path: Path) -> None:
             "test_log": ".agent-loop/runs/x/rounds/02/test-log.txt",
             "messages": ".agent-loop/runs/x/rounds/02/claude-messages.jsonl",
         },
-        safety_flags=["diff_too_many_lines"],
+        safety_flags=["diff_has_sensitive"],
     )
 
     assert payload["round"] == 2
@@ -52,7 +52,7 @@ def test_build_review_payload_writes_and_returns(tmp_path: Path) -> None:
     assert payload["result_summary"]["changed_files"] == ["src/auth/middleware.py"]
     assert payload["result_summary"]["plan_deviations"] == ["reused existing helper"]
     assert payload["diff_summary"]["files_changed"] == 1
-    assert payload["safety_flags"] == ["diff_too_many_lines"]
+    assert payload["safety_flags"] == ["diff_has_sensitive"]
     assert "shared_delta" in payload
 
     on_disk = json.loads(out.read_text())

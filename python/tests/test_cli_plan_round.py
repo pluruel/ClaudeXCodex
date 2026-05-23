@@ -259,3 +259,206 @@ def test_plan_round_handles_non_json_model_selection(tmp_repo: Path) -> None:
     assert "## Worker Model" in prompt_text
     assert "sonnet" in prompt_text
     assert "Scope: normal" in prompt_text
+
+
+def test_plan_round_parses_and_persists_subtasks(tmp_repo: Path) -> None:
+    """When Codex emits a valid subtasks array, plan-round must normalize and
+    persist them in round_plan.json and inject a readable block into the prompt."""
+    r1 = _run(["init-run", "--goal", "g", "--slug", "s"], cwd=tmp_repo)
+    run_id = json.loads(r1.stdout)["run_id"]
+    plan = tmp_repo / ".agent-loop" / "runs" / run_id / "plan.md"
+    plan.write_text("# Plan\n\n## Tasks\n1. [ ] do A\n", encoding="utf-8")
+
+    subtasks = [
+        {
+            "id": "r1-a1",
+            "role": "analysis",
+            "model": "haiku",
+            "reasoning_effort": "low",
+            "scope": "narrow",
+            "description": "Map CLI entry points",
+            "required_reading": ["python/agent_loop/cli.py"],
+            "out_of_scope": [".git/"],
+            "depends_on": [],
+            "deliverable": "Append findings to shared/knowledge.md",
+        },
+        {
+            "id": "r1-i1",
+            "role": "implementation",
+            "model": "sonnet",
+            "reasoning_effort": "medium",
+            "scope": "normal",
+            "description": "Implement subtask parsing",
+            "required_reading": ["python/agent_loop/cli.py"],
+            "out_of_scope": [".git/"],
+            "depends_on": ["r1-a1"],
+            "deliverable": "Pass tests for subtask normalization",
+        },
+    ]
+    env = _codex_stub_sequence(tmp_repo, [
+        json.dumps({
+            "round": 1,
+            "worker_model": "sonnet",
+            "worker_model_reason": "integration work",
+            "scope": "normal",
+            "reasoning_effort": "medium",
+            "complexity": {"files_expected": 3, "requires_architecture": False,
+                           "requires_broad_search": False, "risk": "low"},
+            "subtasks": subtasks,
+        }),
+        "## Goal\nDo A\n\n## Task (this round)\nImplement subtask parsing\n\n## Required Reading\n- cli.py",
+    ])
+    r = _run(["plan-round", "--run", run_id], cwd=tmp_repo, env_overrides=env)
+    assert r.returncode == 0, r.stderr
+    js = json.loads(r.stdout)
+    assert js["subtask_count"] == 2
+    assert len(js["subtasks"]) == 2
+    assert js["subtasks"][0]["id"] == "r1-a1"
+    assert js["subtasks"][0]["role"] == "analysis"
+    assert js["subtasks"][1]["id"] == "r1-i1"
+    assert js["subtasks"][1]["depends_on"] == ["r1-a1"]
+
+    # round_plan.json must include normalized subtasks
+    rp = tmp_repo / ".agent-loop" / "runs" / run_id / "rounds" / "01" / "round_plan.json"
+    assert rp.exists(), "round_plan.json (canonical name) must exist"
+    plan_json = json.loads(rp.read_text(encoding="utf-8"))
+    assert "subtasks" in plan_json
+    assert len(plan_json["subtasks"]) == 2
+
+    # Compatibility alias must also exist
+    rp_compat = tmp_repo / ".agent-loop" / "runs" / run_id / "rounds" / "01" / "round-plan.json"
+    assert rp_compat.exists(), "round-plan.json (compat alias) must exist"
+
+    # Prompt must include the subtask block
+    pr = tmp_repo / ".agent-loop" / "runs" / run_id / "rounds" / "01" / "claude-prompt.md"
+    prompt_text = pr.read_text(encoding="utf-8")
+    assert "### Subtasks (this round)" in prompt_text
+    assert "r1-a1" in prompt_text
+    assert "r1-i1" in prompt_text
+    assert "analysis" in prompt_text
+    assert "implementation" in prompt_text
+
+
+def test_plan_round_normalizes_invalid_subtask_fields(tmp_repo: Path) -> None:
+    """Invalid per-subtask model or reasoning_effort must fall back to safe defaults
+    without crashing plan-round."""
+    r1 = _run(["init-run", "--goal", "g", "--slug", "s"], cwd=tmp_repo)
+    run_id = json.loads(r1.stdout)["run_id"]
+    plan = tmp_repo / ".agent-loop" / "runs" / run_id / "plan.md"
+    plan.write_text("# Plan\n\n## Tasks\n1. [ ] do A\n", encoding="utf-8")
+
+    bad_subtasks = [
+        {
+            "id": "r1-bad",
+            "role": "unknown-role",       # invalid role → normalized to implementation
+            "model": "mega-ultra-opus",    # invalid model → normalized to default (sonnet)
+            "reasoning_effort": "extreme", # invalid effort → role-aware default
+            "scope": "galaxy",             # invalid scope → normal
+            "description": "bad subtask",
+            "required_reading": [],
+            "out_of_scope": [],
+            "depends_on": [],
+            "deliverable": "do something",
+        },
+    ]
+    env = _codex_stub_sequence(tmp_repo, [
+        json.dumps({
+            "round": 1,
+            "worker_model": "sonnet",
+            "worker_model_reason": "test",
+            "scope": "normal",
+            "reasoning_effort": "medium",
+            "complexity": {},
+            "subtasks": bad_subtasks,
+        }),
+        "## Goal\nDo A\n\n## Task (this round)\nImplement A",
+    ])
+    r = _run(["plan-round", "--run", run_id], cwd=tmp_repo, env_overrides=env)
+    assert r.returncode == 0, r.stderr
+
+    rp = tmp_repo / ".agent-loop" / "runs" / run_id / "rounds" / "01" / "round_plan.json"
+    plan_json = json.loads(rp.read_text(encoding="utf-8"))
+    st = plan_json["subtasks"][0]
+    assert st["role"] == "implementation"   # unknown-role → implementation
+    assert st["model"] == "sonnet"          # invalid model → default
+    assert st["scope"] == "normal"          # invalid scope → normal
+    assert st["reasoning_effort"] in ("low", "medium", "high")  # valid effort
+
+
+def test_plan_round_missing_subtasks_triggers_empty_list(tmp_repo: Path) -> None:
+    """When Codex omits subtasks entirely, plan-round must persist an empty
+    subtasks list (not crash) and not inject a subtask block into the prompt."""
+    r1 = _run(["init-run", "--goal", "g", "--slug", "s"], cwd=tmp_repo)
+    run_id = json.loads(r1.stdout)["run_id"]
+    plan = tmp_repo / ".agent-loop" / "runs" / run_id / "plan.md"
+    plan.write_text("# Plan\n\n## Tasks\n1. [ ] do A\n", encoding="utf-8")
+
+    env = _codex_stub_sequence(tmp_repo, [
+        json.dumps({
+            "round": 1,
+            "worker_model": "haiku",
+            "worker_model_reason": "mechanical",
+            "scope": "narrow",
+            "reasoning_effort": "low",
+            "complexity": {},
+            # subtasks deliberately omitted
+        }),
+        "## Goal\nDo A\n\n## Task (this round)\nImplement A",
+    ])
+    r = _run(["plan-round", "--run", run_id], cwd=tmp_repo, env_overrides=env)
+    assert r.returncode == 0, r.stderr
+    js = json.loads(r.stdout)
+    assert js["subtask_count"] == 0
+    assert js["subtasks"] == []
+
+    rp = tmp_repo / ".agent-loop" / "runs" / run_id / "rounds" / "01" / "round_plan.json"
+    plan_json = json.loads(rp.read_text(encoding="utf-8"))
+    assert plan_json["subtasks"] == []
+
+    # No subtask block should appear in the prompt
+    pr = tmp_repo / ".agent-loop" / "runs" / run_id / "rounds" / "01" / "claude-prompt.md"
+    prompt_text = pr.read_text(encoding="utf-8")
+    assert "### Subtasks (this round)" not in prompt_text
+
+
+def test_plan_round_prompt_asks_codex_for_subtasks(tmp_repo: Path) -> None:
+    """The round plan Codex prompt must include 'subtasks' in its schema so Codex
+    knows to produce subtask decomposition. This test verifies the schema wording
+    by checking that the CLI exits successfully and the persisted plan has the key."""
+    r1 = _run(["init-run", "--goal", "g", "--slug", "s"], cwd=tmp_repo)
+    run_id = json.loads(r1.stdout)["run_id"]
+    plan = tmp_repo / ".agent-loop" / "runs" / run_id / "plan.md"
+    plan.write_text("# Plan\n\n## Tasks\n1. [ ] do A\n", encoding="utf-8")
+
+    env = _codex_stub_sequence(tmp_repo, [
+        json.dumps({
+            "round": 1,
+            "worker_model": "sonnet",
+            "worker_model_reason": "test",
+            "scope": "normal",
+            "reasoning_effort": "medium",
+            "complexity": {},
+            "subtasks": [
+                {
+                    "id": "r1-v1",
+                    "role": "verification",
+                    "model": "haiku",
+                    "reasoning_effort": "low",
+                    "scope": "narrow",
+                    "description": "Run tests",
+                    "required_reading": [],
+                    "out_of_scope": [],
+                    "depends_on": [],
+                    "deliverable": "Run: python -m pytest tests/ -x and report pass/fail",
+                }
+            ],
+        }),
+        "## Goal\nDo A\n\n## Task (this round)\nRun verification",
+    ])
+    r = _run(["plan-round", "--run", run_id], cwd=tmp_repo, env_overrides=env)
+    assert r.returncode == 0, r.stderr
+    rp = tmp_repo / ".agent-loop" / "runs" / run_id / "rounds" / "01" / "round_plan.json"
+    plan_json = json.loads(rp.read_text(encoding="utf-8"))
+    # The key must be present (Codex was asked for it; stub provided it)
+    assert "subtasks" in plan_json
+    assert plan_json["subtasks"][0]["role"] == "verification"

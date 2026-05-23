@@ -12,6 +12,14 @@ mode = "compact"
 allowed = ["haiku", "sonnet", "opus"]
 default = "sonnet"
 
+[worker_reasoning]
+# Reasoning effort the worker subagent should apply. Independent of
+# worker_models: a `broad` scope can still pick `low` effort if the task is
+# mostly mechanical, and a `narrow` scope can pick `high` if the few changes
+# touch deep architecture.
+allowed = ["low", "medium", "high"]
+default = "medium"
+
 [safety.bash_block]
 patterns = [
   "^\\s*git\\s+(commit|push|merge|rebase|reset\\s+--hard|clean\\s+-f)",
@@ -40,7 +48,3 @@ patterns = [
   "poetry\\.lock$",
   "uv\\.lock$",
 ]
-
-[safety.diff_size]
-warn_files = 15
-warn_lines = 600

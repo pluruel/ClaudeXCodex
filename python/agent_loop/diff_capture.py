@@ -33,6 +33,8 @@ def capture_diff(repo: Path, baseline_sha: str) -> str:
         check=True,
         capture_output=True,
         text=True,
+        encoding="utf-8",
+        errors="replace",
     )
     tracked_diff = r.stdout
 
