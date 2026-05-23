@@ -185,25 +185,28 @@ For each round N (starting at 1):
    The Task tool's terminal rendering does NOT display the per-call `model`
    parameter — the user sees only `Agent(description)` while a subtask runs.
    To make routing visible without forcing the user to open files, the
-   supervisor MUST emit ONE plain text line immediately before each Task call:
+   supervisor MUST emit one markdown bullet immediately before each Task
+   call. Use this EXACT format (bold id, backticked model, italicized
+   reasoning/scope) so the line stands out in the terminal:
 
    ```
-   <subtask.id> → <subtask.model> (<subtask.reasoning_effort>, <subtask.scope>) — <one-sentence goal>
+   - **<subtask.id>** → `<subtask.model>` *(<subtask.reasoning_effort>, <subtask.scope>)* — <one-sentence goal>
    ```
 
-   Example:
+   Example block (rendered by the chat client as a real bulleted list):
 
    ```
-   r2-a1 → sonnet (high, narrow) — audit [worker_reasoning] wiring end-to-end
-   r2-a2 → sonnet (high, narrow) — audit round_plan.json / depends_on consistency
-   r2-i1 → sonnet (medium, normal) — apply targeted fixes from r2-a1 / r2-a2
-   r2-v1 → haiku (low, narrow) — run pytest sweep + invariant grep
+   - **r2-a1** → `sonnet` *(high, narrow)* — audit [worker_reasoning] wiring end-to-end
+   - **r2-a2** → `sonnet` *(high, narrow)* — audit round_plan.json / depends_on consistency
+   - **r2-i1** → `sonnet` *(medium, normal)* — apply targeted fixes from r2-a1 / r2-a2
+   - **r2-v1** → `haiku` *(low, narrow)* — run pytest sweep + invariant grep
    ```
 
-   When multiple subtasks fan out in parallel (analysis phase), emit one such
-   line per subtask, then send the Task calls together. The lines are plain
-   user-facing text — not tool calls, not stored in any file, just so the
-   user sees which model is handling which slice as the agent transcript
+   When multiple subtasks fan out in parallel (analysis phase), emit the
+   bullets as one contiguous list, then send the parallel Task calls together
+   in the SAME assistant turn. The bullets are plain user-facing markdown —
+   not tool calls, not stored in any file — emitted purely so the user can
+   see at a glance which model is handling which slice as the transcript
    scrolls.
 
    **Phase 1 — Analysis (parallel):**
