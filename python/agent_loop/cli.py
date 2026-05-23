@@ -4,6 +4,8 @@ from __future__ import annotations
 import argparse
 import sys
 
+from agent_loop import __version__
+
 
 def _add_common(p: argparse.ArgumentParser) -> None:
     p.add_argument(
@@ -13,7 +15,12 @@ def _add_common(p: argparse.ArgumentParser) -> None:
 
 
 def build_parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(prog="python -m agent_loop")
+    parser = argparse.ArgumentParser(prog="agent-loop")
+    parser.add_argument(
+        "--version", "-V",
+        action="version",
+        version=f"agent-loop {__version__}",
+    )
     sub = parser.add_subparsers(dest="cmd", required=True)
 
     # init-run
