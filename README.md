@@ -1,4 +1,4 @@
-# agent-loop — Claude Code plugin for review loops with Codex
+# ClaudeXCodex — Claude Code plugin for review loops with Codex
 
 A Claude Code plugin where the interactive Claude session is the supervisor, dispatching worker subagents via the Task tool and using Codex CLI (headless `codex exec --json`) for planning and review. Durable artifacts go to `.agent-loop/runs/<id>/`; compact mode removes diff stats, progress logs, and diff patches after a clean review.
 
@@ -55,11 +55,11 @@ In Claude Code, run these slash commands in order:
 
 ```
 /plugin marketplace add pluruel/ClaudeXCodex
-/plugin install agent-loop@claudexcodex
+/plugin install ClaudeXCodex@claudexcodex
 /reload-plugins
 ```
 
-After this, `/agent-loop <goal>` (start a new run; quotes optional) and `/agent-loop continue` (or just `/agent-loop` to resume the most recent run) become available.
+After this, `/ClaudeXCodex:agent-loop <goal>` (start a new run; quotes optional) and `/ClaudeXCodex:agent-loop continue` (or just `/ClaudeXCodex:agent-loop` to resume the most recent run) become available.
 
 #### Updating to the latest version
 
@@ -67,7 +67,7 @@ The local marketplace clone is cached. When upstream changes, refresh it with:
 
 ```
 /plugin marketplace update claudexcodex
-/plugin install agent-loop@claudexcodex
+/plugin install ClaudeXCodex@claudexcodex
 /reload-plugins
 ```
 
@@ -76,13 +76,13 @@ If `update` is unavailable or doesn't take effect, remove and re-add:
 ```
 /plugin marketplace remove claudexcodex
 /plugin marketplace add pluruel/ClaudeXCodex
-/plugin install agent-loop@claudexcodex
+/plugin install ClaudeXCodex@claudexcodex
 ```
 
 #### Uninstall
 
 ```
-/plugin uninstall agent-loop@claudexcodex
+/plugin uninstall ClaudeXCodex@claudexcodex
 /plugin marketplace remove claudexcodex
 ```
 
@@ -92,7 +92,7 @@ Point the marketplace at your working tree instead of GitHub:
 
 ```
 /plugin marketplace add c:\path\to\ClaudeXCodex
-/plugin install agent-loop@claudexcodex
+/plugin install ClaudeXCodex@claudexcodex
 ```
 
 Any edits in your working tree are picked up on the next `/plugin install` or `/plugin marketplace update`.
@@ -130,7 +130,7 @@ In your target repo:
 
 ```
 $ claude
-> /agent-loop <your goal here, quotes optional>
+> /ClaudeXCodex:agent-loop <your goal here, quotes optional>
 ```
 
 The supervisor (this Claude session) will then call `codex exec` for planning/review and dispatch worker subagents (Task tool) for implementation. All artifacts in `.agent-loop/runs/<id>/`.
@@ -138,7 +138,7 @@ The supervisor (this Claude session) will then call `codex exec` for planning/re
 Resume after interruption (no goal arg → resume most recent run):
 
 ```
-> /agent-loop
+> /ClaudeXCodex:agent-loop
 ```
 
 ## How it works

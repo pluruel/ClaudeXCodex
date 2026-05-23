@@ -1,6 +1,6 @@
 ---
 name: agent-loop
-description: When the user types `/agent-loop <goal>` (start a new run; quotes around the goal are optional) or `/agent-loop` with no text (resume an interrupted run), this skill turns the current Claude session into the supervisor of a bounded review loop. Codex CLI (headless `codex exec --json`) does planning and review; Claude subagents (Task tool) do implementation; the supervisor (this Claude session) only reads tiny status JSON. Artifacts in `.agent-loop/runs/<id>/`.
+description: When the user types `/ClaudeXCodex:agent-loop <goal>` (start a new run; quotes around the goal are optional) or `/ClaudeXCodex:agent-loop` with no text (resume an interrupted run), this skill turns the current Claude session into the supervisor of a bounded review loop. Codex CLI (headless `codex exec --json`) does planning and review; Claude subagents (Task tool) do implementation; the supervisor (this Claude session) only reads tiny status JSON. Artifacts in `.agent-loop/runs/<id>/`.
 ---
 
 # agent-loop — Claude Supervisor Skill
@@ -9,11 +9,11 @@ You are the supervisor of a bounded review loop. Your context must stay lean. Th
 
 ## Invocation grammar
 
-- `/agent-loop <goal text>` — start a new run. Everything after `/agent-loop ` is the goal. Quotes are NOT required, e.g. `/agent-loop fix the login bug`. If the user did quote it (`/agent-loop "fix the login bug"`), strip the outer quotes before passing along.
-- `/agent-loop` (no text after) — resume the most recently active run.
-- `/agent-loop continue` — explicit resume form; also accepted.
+- `/ClaudeXCodex:agent-loop <goal text>` — start a new run. Everything after `/ClaudeXCodex:agent-loop ` is the goal. Quotes are NOT required, e.g. `/ClaudeXCodex:agent-loop fix the login bug`. If the user did quote it (`/ClaudeXCodex:agent-loop "fix the login bug"`), strip the outer quotes before passing along.
+- `/ClaudeXCodex:agent-loop` (no text after) — resume the most recently active run.
+- `/ClaudeXCodex:agent-loop continue` — explicit resume form; also accepted.
 
-Decision rule: if the message after `/agent-loop` is empty or is exactly the word `continue`, treat as resume. Otherwise treat the whole remainder as the goal and follow "On start" below.
+Decision rule: if the message after `/ClaudeXCodex:agent-loop` is empty or is exactly the word `continue`, treat as resume. Otherwise treat the whole remainder as the goal and follow "On start" below.
 
 ## CLI invocation convention
 
@@ -29,7 +29,7 @@ The wrapper resolves `${CLAUDE_PLUGIN_ROOT}` when available and otherwise infers
 
 1. `Bash: "${CLAUDE_PLUGIN_ROOT}/bin/agent-loop" --help`. Expected: usage banner listing subcommands (`init-run`, `plan-init`, ...).
 2. If `python` isn't found: tell the user to install Python 3.11+ and retry. (On some systems the binary is `python3`; if so use that consistently in every subsequent call.)
-3. If `${CLAUDE_PLUGIN_ROOT}` is empty or `bin/agent-loop` is missing, report that the plugin install did not expose the plugin root correctly. The user can try `/plugin marketplace update claudexcodex`, then `/plugin install agent-loop@claudexcodex`, then `/reload-plugins`.
+3. If `${CLAUDE_PLUGIN_ROOT}` is empty or `bin/agent-loop` is missing, report that the plugin install did not expose the plugin root correctly. The user can try `/plugin marketplace update claudexcodex`, then `/plugin install ClaudeXCodex@claudexcodex`, then `/reload-plugins`.
 4. If you see `No module named agent_loop` or `FileNotFoundError`: report it — the plugin install is incomplete. The user can try `/plugin marketplace update claudexcodex`.
 5. Also verify Codex CLI: `Bash: codex --version`. If missing, tell the user to install Codex CLI and run `codex login`.
 
@@ -97,7 +97,7 @@ dispatching -- this usually indicates the round plan needs another pass.
 - For details, you can run the CLI's `inspect` subcommand with narrow `--lines` to extract a slice — but only when JSON is genuinely insufficient (rare). `--lines` accepts `N` (first N), `N-` (from N onward), or `A-B` (range). Example: `agent-loop inspect --run <id> --round N --file claude-result.md --lines 80`.
 - You never call `codex exec` or `codex` directly — always via the CLI's `plan-init|plan-round|review-round` subcommands.
 
-## On start (`/agent-loop <goal text>`)
+## On start (`/ClaudeXCodex:agent-loop <goal text>`)
 
 1. `Bash: "${CLAUDE_PLUGIN_ROOT}/bin/agent-loop" init-run --goal "<goal>" --slug "<short-slug>"`
    → JSON `{run_id, run_dir}`. Remember `run_id`.
@@ -192,7 +192,7 @@ For each round N (starting at 1):
    - `STOP_FOR_USER` → Tell the user the loop paused; show `safety_flags` and point at `codex-review.md` (for the human, not for you). END.
    - `NEEDS_CHANGES` → Loop back to step 1 (next round).
 
-## On continue (`/agent-loop` or `/agent-loop continue`)
+## On continue (`/ClaudeXCodex:agent-loop` or `/ClaudeXCodex:agent-loop continue`)
 
 1. `Bash: "${CLAUDE_PLUGIN_ROOT}/bin/agent-loop" continue` (optionally `--run <id>`)
    → JSON `{action, notes, options, run_id, current_round}`.

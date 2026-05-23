@@ -5,7 +5,7 @@ description: Interpret the JSON from the `continue` subcommand and resume the lo
 
 # resume-run
 
-Invoked when the user types `/agent-loop` with no args or `/agent-loop continue [--run <id>]`.
+Invoked when the user types `/ClaudeXCodex:agent-loop` with no args or `/ClaudeXCodex:agent-loop continue [--run <id>]`.
 
 > CLI is invoked through the plugin wrapper. Use `"${CLAUDE_PLUGIN_ROOT}/bin/agent-loop"` exactly; do not call `agent-loop` via `PATH`.
 

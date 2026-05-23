@@ -6,7 +6,7 @@
   },
   "plugins": [
     {
-      "name": "agent-loop",
+      "name": "ClaudeXCodex",
       "source": "./",
       "description": "Claude-supervised review loop with Codex (subscription-headless) as planner/reviewer and Claude subagents as workers"
     }

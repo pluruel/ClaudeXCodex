@@ -75,13 +75,13 @@ jobs:
           tar --exclude='.git' --exclude='.venv' --exclude='__pycache__' \
               --exclude='*.egg-info' --exclude='.agent-loop' --exclude='.pytest_cache' \
               --exclude='dist' \
-              -czf dist/agent-loop-${{ github.ref_name }}.tar.gz \
+              -czf dist/ClaudeXCodex-${{ github.ref_name }}.tar.gz \
               .claude-plugin bin skills config python README.md
 
       - name: Upload to GitHub Release
         uses: softprops/action-gh-release@v2
         with:
-          files: dist/agent-loop-*.tar.gz
+          files: dist/ClaudeXCodex-*.tar.gz
           generate_release_notes: true
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
