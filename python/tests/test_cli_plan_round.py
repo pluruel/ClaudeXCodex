@@ -65,8 +65,10 @@ def test_plan_round_creates_round_dir_and_prompt(tmp_repo: Path, codex_stub) -> 
     assert js["worker_model"] == "haiku"
     pr = tmp_repo / ".agent-loop" / "runs" / run_id / "rounds" / "01" / "claude-prompt.md"
     rp = tmp_repo / ".agent-loop" / "runs" / run_id / "rounds" / "01" / "round-plan.json"
+    rp_canon = tmp_repo / ".agent-loop" / "runs" / run_id / "rounds" / "01" / "round_plan.json"
     assert pr.exists()
-    assert rp.exists()
+    assert rp.exists(), "compat alias round-plan.json must exist"
+    assert rp_canon.exists(), "canonical round_plan.json must exist"
     assert json.loads(rp.read_text(encoding="utf-8"))["worker_model"] == "haiku"
     assert "Implement A" in pr.read_text(encoding="utf-8")
 

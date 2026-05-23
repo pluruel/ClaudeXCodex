@@ -105,7 +105,10 @@ def test_render_subtasks_block_contains_all_columns() -> None:
     assert "| id |" in block
     assert "role" in block
     assert "model" in block
+    assert "effort" in block
     assert "scope" in block
+    # Per-row effort values must appear
+    assert "medium" in block
 
 
 def test_render_subtasks_block_empty_returns_empty_string() -> None:

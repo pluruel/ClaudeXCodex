@@ -383,8 +383,8 @@ def _parse_round_plan(raw: str, *, round_n: int, allowed_models: list[str],
 
     # Normalize subtasks. round_n is intentionally NOT used to regenerate ids;
     # Codex-supplied ids are trusted if they are unique, non-empty strings.
-    # The supervisor should use depends_on as advisory-only until dispatch
-    # infrastructure enforces ordering (see open-questions.md).
+    # The supervisor enforces depends_on ordering at dispatch time per SKILL.md
+    # Phase 2; the CLI normalizes and passes the field through.
     subtasks = _normalize_subtasks(
         plan.get("subtasks"),
         allowed_models=allowed_models,
@@ -443,16 +443,17 @@ def _render_subtasks_block(subtasks: list[dict]) -> str:
     lines = [
         "### Subtasks (this round)",
         "",
-        "| id | role | model | scope | description |",
-        "|----|------|-------|-------|-------------|",
+        "| id | role | model | effort | scope | description |",
+        "|----|------|-------|--------|-------|-------------|",
     ]
     for st in subtasks:
         sid = st.get("id", "?")
         role = st.get("role", "?")
         model = st.get("model", "?")
+        effort = st.get("reasoning_effort", "?")
         scope = st.get("scope", "?")
         desc = st.get("description", st.get("deliverable", "")).replace("|", "\\|")
-        lines.append(f"| {sid} | {role} | {model} | {scope} | {desc} |")
+        lines.append(f"| {sid} | {role} | {model} | {effort} | {scope} | {desc} |")
     lines.append("")
     lines.append("Each subtask runs as an independent subagent. Implement only your own subtask id.")
     lines.append("Do not read or write files owned by another subtask unless they are in `shared/`.")
