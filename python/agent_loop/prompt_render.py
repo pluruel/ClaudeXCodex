@@ -22,6 +22,11 @@ class RoundContext:
     run_dir_rel: str
     shared_dir_rel: str
     round_dir_rel: str
+    # A2: Codex-supplied content fields (merged envelope). When present, the
+    # caller may use these instead of pre-building `task` themselves.
+    task_description: str = ""
+    execution_plan_bullets: list = field(default_factory=list)
+    acceptance_criteria: list = field(default_factory=list)
 
 
 def _fmt_pairs(items: list[tuple[str, str]]) -> str:

@@ -54,6 +54,9 @@ def test_build_review_payload_writes_and_returns(tmp_path: Path) -> None:
     assert payload["diff_summary"]["files_changed"] == 1
     assert payload["safety_flags"] == ["diff_has_sensitive"]
     assert "shared_delta" in payload
+    # B3: verification_outcomes key must always be present
+    assert "verification_outcomes" in payload
+    assert payload["verification_outcomes"] == []
 
     on_disk = json.loads(out.read_text())
     assert on_disk == payload

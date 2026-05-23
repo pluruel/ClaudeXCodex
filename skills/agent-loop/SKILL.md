@@ -57,12 +57,11 @@ mode = "debug"
 ## Worker model selection
 
 `plan-round` emits round-level metadata: `worker_model` (`haiku`, `sonnet`, or `opus`),
-`worker_model_reason`, `scope` (`narrow` | `normal` | `broad`),
-`reasoning_effort` (`low` | `medium` | `high`, default `medium`), `subtasks` (list),
-and `round_plan_path`. The round-level fields are the **dominant character** of the
-round — used for the user-facing announce line and as the fallback model when
-`subtasks` is missing or invalid. The per-subtask `model`, `reasoning_effort`, and
-`scope` fields govern actual dispatch when `subtasks` is present and valid.
+`worker_model_reason`, `reasoning_effort` (`low` | `medium` | `high`, default `medium`),
+`subtasks` (list), and `round_plan_path`. The round-level fields are the **dominant
+character** of the round — used for the user-facing announce line and as the fallback
+model when `subtasks` is missing or invalid. The per-subtask `model` and
+`reasoning_effort` fields govern actual dispatch when `subtasks` is present and valid.
 
 The CLI ALSO injects a canonical `## Worker Model` section into `claude-prompt.md`,
 so each worker subagent sees the routing decision that applies to it, regardless of
@@ -83,7 +82,6 @@ Each subtask carries:
 - `role` — `analysis | implementation | verification`
 - `model` — the worker model alias for this subtask
 - `reasoning_effort` — `low | medium | high`
-- `scope` — `narrow | normal | broad`
 - `required_reading` — list of file paths (max 5; split the subtask if more are needed)
 - `out_of_scope` — list of paths/patterns the worker must not read or edit
 - `depends_on` — list of same-round subtask ids that must complete first
@@ -104,20 +102,18 @@ When dispatching a subtask via the Task tool:
    This is the worker's only knob in that environment; keep it visible.
 
 Typical mappings (trust `plan-round`; do not rewrite):
-- `narrow` + `haiku` → `low` effort — mechanical execution, minimal reading
-- `normal` + `sonnet` → `medium` effort — integration, moderate uncertainty
-- `broad` + `opus` → `high` effort — architecture, high-risk, deviations must be justified
+- `haiku` → `low` effort — mechanical execution, minimal reading
+- `sonnet` → `medium` effort — integration, moderate uncertainty
+- `opus` → `high` effort — architecture, high-risk, deviations must be justified
 
-`reasoning_effort` and `scope`/`model` are independent axes. A `narrow` subtask may
+`reasoning_effort` and `model` are independent axes. A `haiku` subtask may
 use `high` effort if the few changes touch deep architecture; trust whatever the round
 plan emitted.
 
 ### How to act on the round-level fields
 
-- Use `worker_model` and `scope` for the announce line (step 3 of round loop).
-- If `scope` and `worker_model` disagree (e.g. `broad` + `haiku`), raise the mismatch
-  with the user before dispatching.
-- Always paste `worker_model`, `worker_model_reason`, `scope`, and `reasoning_effort`
+- Use `worker_model` and `reasoning_effort` for the announce line (step 3 of round loop).
+- Always paste `worker_model`, `worker_model_reason`, and `reasoning_effort`
   verbatim into the worker prompt's leading lines — or into each subtask prompt — as a
   visible reminder. The CLI-injected `## Worker Model` section inside `claude-prompt.md`
   is the durable record.
@@ -150,13 +146,13 @@ unchanged from the original SKILL.md.
 For each round N (starting at 1):
 
 1. `Bash: "${CLAUDE_PLUGIN_ROOT}/bin/agent-loop" plan-round --run <run_id>`
-   → JSON `{round_n, prompt_path, round_plan_path, worker_model, worker_model_reason, scope, summary}`. (Codex drafted the worker prompt and selected the worker model; the CLI normalized the selection and injected a `## Worker Model` section into the prompt.)
+   → JSON `{round_n, prompt_path, round_plan_path, worker_model, worker_model_reason, reasoning_effort, summary}`. (Codex drafted the worker prompt and selected the worker model; the CLI normalized the selection and injected a `## Worker Model` section into the prompt.)
 2. `Bash: "${CLAUDE_PLUGIN_ROOT}/bin/agent-loop" capture-baseline`
    → JSON `{baseline}`. Save the sha.
 3. **Announce the round to the user** (one line, verbatim format, BEFORE dispatch):
 
    ```
-   Round N — worker (dominant): <worker_model> (<worker_model_reason>), scope: <scope> — subtasks: <count> (analysis×<a>, implementation×<i>, verification×<v>)
+   Round N — worker (dominant): <worker_model> (<worker_model_reason>), effort: <reasoning_effort> — subtasks: <count> (analysis×<a>, implementation×<i>, verification×<v>)
    ```
 
    Use the values returned by `plan-round` in step 1. Count each role from the
@@ -173,7 +169,7 @@ For each round N (starting at 1):
 
    Inspect the `subtasks` field from the `plan-round` JSON (step 1). If it is present,
    non-empty, and each entry has at minimum `id`, `role`, `model`, `reasoning_effort`,
-   `scope`, and `deliverable`, proceed to **5b (subtask fan-out)**. Otherwise proceed
+   and `deliverable`, proceed to **5b (subtask fan-out)**. Otherwise proceed
    to **5c (single-worker fallback)**.
 
    ### 5b — Subtask fan-out (default path)
@@ -187,19 +183,19 @@ For each round N (starting at 1):
    To make routing visible without forcing the user to open files, the
    supervisor MUST emit one markdown bullet immediately before each Task
    call. Use this EXACT format (bold id, backticked model, italicized
-   reasoning/scope) so the line stands out in the terminal:
+   reasoning_effort) so the line stands out in the terminal:
 
    ```
-   - **<subtask.id>** → `<subtask.model>` *(<subtask.reasoning_effort>, <subtask.scope>)* — <one-sentence goal>
+   - **<subtask.id>** → `<subtask.model>` *(<subtask.reasoning_effort>)* — <one-sentence goal>
    ```
 
    Example block (rendered by the chat client as a real bulleted list):
 
    ```
-   - **r2-a1** → `sonnet` *(high, narrow)* — audit [worker_reasoning] wiring end-to-end
-   - **r2-a2** → `sonnet` *(high, narrow)* — audit round_plan.json / depends_on consistency
-   - **r2-i1** → `sonnet` *(medium, normal)* — apply targeted fixes from r2-a1 / r2-a2
-   - **r2-v1** → `haiku` *(low, narrow)* — run pytest sweep + invariant grep
+   - **r2-a1** → `sonnet` *(high)* — audit [worker_reasoning] wiring end-to-end
+   - **r2-a2** → `sonnet` *(high)* — audit round_plan.json / depends_on consistency
+   - **r2-i1** → `sonnet` *(medium)* — apply targeted fixes from r2-a1 / r2-a2
+   - **r2-v1** → `haiku` *(low)* — run pytest sweep + invariant grep
    ```
 
    When multiple subtasks fan out in parallel (analysis phase), emit the
@@ -219,7 +215,7 @@ For each round N (starting at 1):
      model: <subtask.model>   # drop if host rejects per-call model
      prompt: |
        You are subtask <subtask.id> (role=analysis, model=<subtask.model>,
-       reasoning_effort=<subtask.reasoning_effort>, scope=<subtask.scope>)
+       reasoning_effort=<subtask.reasoning_effort>)
        inside agent-loop run <run_id>, round N.
 
        Strict role rules:
@@ -230,7 +226,6 @@ For each round N (starting at 1):
 
        Codex selected dominant model: <worker_model>
        Reason: <worker_model_reason>
-       Scope: <subtask.scope>
        Reasoning effort: <subtask.reasoning_effort>
 
        Required Reading (in order):
@@ -267,7 +262,7 @@ For each round N (starting at 1):
      model: <subtask.model>   # drop if host rejects per-call model
      prompt: |
        You are subtask <subtask.id> (role=implementation, model=<subtask.model>,
-       reasoning_effort=<subtask.reasoning_effort>, scope=<subtask.scope>)
+       reasoning_effort=<subtask.reasoning_effort>)
        inside agent-loop run <run_id>, round N.
 
        Strict role rules:
@@ -284,7 +279,6 @@ For each round N (starting at 1):
 
        Codex selected dominant model: <worker_model>
        Reason: <worker_model_reason>
-       Scope: <subtask.scope>
        Reasoning effort: <subtask.reasoning_effort>
 
        Context from analysis phase: see .agent-loop/runs/<run_id>/shared/
@@ -322,7 +316,7 @@ For each round N (starting at 1):
      model: <subtask.model>   # drop if host rejects per-call model
      prompt: |
        You are subtask <subtask.id> (role=verification, model=<subtask.model>,
-       reasoning_effort=<subtask.reasoning_effort>, scope=<subtask.scope>)
+       reasoning_effort=<subtask.reasoning_effort>)
        inside agent-loop run <run_id>, round N.
 
        Strict role rules:
@@ -360,7 +354,7 @@ For each round N (starting at 1):
      prompt: |
        Codex selected worker model: <worker_model>
        Reason: <worker_model_reason>
-       Scope: <scope>                                            # narrow | normal | broad
+       Reasoning Effort: <reasoning_effort>
        Read .agent-loop/runs/<run_id>/rounds/NN/claude-prompt.md and implement
        what it specifies. Strict rules:
        - Follow the Required Reading list in that prompt. Do NOT read Out of Scope.

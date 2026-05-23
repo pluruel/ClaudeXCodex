@@ -69,7 +69,6 @@ _SAMPLE_SUBTASKS = [
         "id": "r1-a1",
         "role": "analysis",
         "model": "haiku",
-        "scope": "narrow",
         "description": "Map CLI entry points",
         "deliverable": "Append findings to shared/knowledge.md",
         "reasoning_effort": "low",
@@ -81,7 +80,6 @@ _SAMPLE_SUBTASKS = [
         "id": "r1-i1",
         "role": "implementation",
         "model": "sonnet",
-        "scope": "normal",
         "description": "Add subtask block injection to plan-round",
         "deliverable": "Pass tests for subtask normalization",
         "reasoning_effort": "medium",
@@ -106,7 +104,8 @@ def test_render_subtasks_block_contains_all_columns() -> None:
     assert "role" in block
     assert "model" in block
     assert "effort" in block
-    assert "scope" in block
+    # C1a: scope column must NOT appear
+    assert "scope" not in block
     # Per-row effort values must appear
     assert "medium" in block
 

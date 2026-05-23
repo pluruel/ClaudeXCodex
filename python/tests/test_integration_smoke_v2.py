@@ -50,17 +50,21 @@ def test_e2e_claude_entry_flow(tmp_repo: Path, codex_stub) -> None:
     assert r2.returncode == 0, r2.stderr
     assert (run_dir / "plan.md").exists()
 
-    # 3. plan-round (stub codex -> returns a worker prompt body)
+    # 3. plan-round (stub codex -> returns merged envelope, single call A1)
     env_round = _codex_stub_sequence(tmp_repo, [
         json.dumps({
-            "round": 1,
-            "worker_model": "haiku",
-            "worker_model_reason": "simple smoke task",
-            "scope": "narrow",
-            "complexity": {"files_expected": 1, "requires_architecture": False,
-                           "requires_broad_search": False, "risk": "low"},
+            "round_plan": {
+                "round": 1,
+                "worker_model": "haiku",
+                "worker_model_reason": "simple smoke task",
+                "reasoning_effort": "low",
+                "subtasks": [],
+            },
+            "task_description": "Implement thing",
+            "execution_plan_bullets": [],
+            "acceptance_criteria": [],
+            "carry_forward": "",
         }),
-        "## Worker Model\nhaiku\n\n## Task (this round)\nImplement thing",
     ])
     r3 = _run(["plan-round", "--run", run_id], cwd=tmp_repo, env_overrides=env_round)
     assert r3.returncode == 0, r3.stderr

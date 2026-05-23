@@ -230,9 +230,9 @@ def _worker_reasoning_config(cfg: dict) -> tuple[list[str], str]:
     """Read `[worker_reasoning]` defaults and return ``(allowed, default)``.
 
     Mirrors the shape of ``_worker_model_config``. The reasoning axis is
-    intentionally independent from model selection: a `broad` scope can still
-    elect `low` effort if the changes are mostly mechanical, and a `narrow`
-    scope can elect `high` if the few changes touch deep architecture.
+    intentionally independent from model selection: a haiku subtask can still
+    elect `high` effort if the few changes touch deep architecture, and an
+    opus subtask can elect `low` if the changes are mostly mechanical.
     """
     reasoning_cfg = cfg.get("worker_reasoning", {})
     allowed = reasoning_cfg.get("allowed", ["low", "medium", "high"])
@@ -270,6 +270,10 @@ def _normalize_subtask(raw: object, *, idx: int,
     or reasoning_effort is replaced with the configured default. The ``id``
     field, if missing or non-string, is regenerated as ``r<idx>-t<idx>``.
     If the input is not a dict at all, returns a minimal fallback subtask.
+
+    Shape (as of C1a): id, role, model, reasoning_effort, required_reading,
+    out_of_scope, depends_on, deliverable, description. The ``scope`` field
+    has been removed; r1-i2 may layer additional normalization on top.
     """
     if not isinstance(raw, dict):
         raw = {}
@@ -292,10 +296,6 @@ def _normalize_subtask(raw: object, *, idx: int,
     raw_effort = raw.get("reasoning_effort")
     effort = raw_effort if isinstance(raw_effort, str) and raw_effort in allowed_efforts else role_default
 
-    # scope
-    raw_scope = raw.get("scope", "normal")
-    scope = raw_scope if raw_scope in ("narrow", "normal", "broad") else "normal"
-
     # required_reading / out_of_scope
     def _to_str_list(val: object) -> list[str]:
         if not isinstance(val, list):
@@ -310,20 +310,39 @@ def _normalize_subtask(raw: object, *, idx: int,
     depends_on = [str(x) for x in raw_deps if isinstance(x, str) and x.strip()] if isinstance(raw_deps, list) else []
 
     # deliverable / goal (description field may be either key)
-    deliverable = str(raw.get("deliverable", "")).strip() or str(raw.get("goal", "")).strip() or "complete the assigned task"
-    description = str(raw.get("description", "")).strip() or deliverable
+    # B2: Replace the silent "complete the assigned task" default with an
+    # obviously-placeholder string that includes the subtask id.
+    # Capture raw_description BEFORE any fallback so that the opus downgrade
+    # check evaluates the actual supplied value, not a fallback-filled value.
+    raw_description = str(raw.get("description", "")).strip()
+    deliverable = (
+        str(raw.get("deliverable", "")).strip()
+        or str(raw.get("goal", "")).strip()
+        or f"{subtask_id} (no description supplied)"
+    )
+    description = raw_description or deliverable
+
+    # B2: Track normalization notes for downstream consumers (e.g., safety audit).
+    normalized_notes: list[str] = []
+
+    # B2: Downgrade opus to default model when raw description is empty/whitespace.
+    # Evaluate against raw_description (pre-fallback) so that a blank description
+    # with a non-empty deliverable still triggers the downgrade.
+    if raw.get("model") == "opus" and not raw_description:
+        model = default_model
+        normalized_notes.append("opus_downgraded_no_description")
 
     return {
         "id": subtask_id,
         "role": role,
         "model": model,
         "reasoning_effort": effort,
-        "scope": scope,
         "required_reading": required_reading,
         "out_of_scope": out_of_scope,
         "depends_on": depends_on,
         "deliverable": deliverable,
         "description": description,
+        "normalized_notes": normalized_notes,
     }
 
 
@@ -334,10 +353,22 @@ def _normalize_subtasks(raw: object, *, allowed_models: list[str], default_model
     Returns a list of normalized subtask dicts. An absent, non-list, or empty
     raw value returns an empty list (triggers single-worker fallback in the
     supervisor). Invalid list entries are normalized individually.
+
+    B2: After individual normalization, a second pass detects and drops:
+    - Cycle edges (A depends_on B which transitively depends_on A).
+    - Reverse-direction edges (an analysis subtask depending on an
+      implementation or verification subtask; any subtask depending on a
+      higher-role subtask in the wrong direction).
+
+    Role ordering (lowest to highest): analysis < implementation < verification.
+    A subtask may depend on same-role or lower-role subtasks only. A
+    depends_on edge that points to a *higher*-role subtask is a reverse-
+    direction edge and is dropped. Cycle edges are detected by DFS and dropped
+    from the offending subtask's depends_on list.
     """
     if not isinstance(raw, list) or not raw:
         return []
-    return [
+    subtasks = [
         _normalize_subtask(
             item, idx=i,
             allowed_models=allowed_models, default_model=default_model,
@@ -346,30 +377,106 @@ def _normalize_subtasks(raw: object, *, allowed_models: list[str], default_model
         for i, item in enumerate(raw)
     ]
 
+    # B2: Build id -> subtask lookup and role-order map.
+    _role_order = {"analysis": 0, "implementation": 1, "verification": 2}
+    id_to_st: dict[str, dict] = {st["id"]: st for st in subtasks}
+
+    # B2: Cycle detection using DFS. Returns True if `start` can reach `target`
+    # by following depends_on edges (excluding the edge being tested).
+    def _can_reach(start_id: str, target_id: str, exclude_edge: tuple[str, str] | None = None) -> bool:
+        visited: set[str] = set()
+        stack = [start_id]
+        while stack:
+            node = stack.pop()
+            if node == target_id:
+                return True
+            if node in visited:
+                continue
+            visited.add(node)
+            dep_st = id_to_st.get(node)
+            if dep_st is None:
+                continue
+            for dep in dep_st.get("depends_on", []):
+                if exclude_edge and (node, dep) == exclude_edge:
+                    continue
+                stack.append(dep)
+        return False
+
+    # B2: Drop reverse-direction and cycle edges.
+    for st in subtasks:
+        st_role_order = _role_order.get(st["role"], 1)
+        clean_deps: list[str] = []
+        for dep_id in st.get("depends_on", []):
+            dep_st = id_to_st.get(dep_id)
+            note: str | None = None
+            if dep_st is not None:
+                dep_role_order = _role_order.get(dep_st["role"], 1)
+                if dep_role_order > st_role_order:
+                    # Reverse-direction edge: this subtask has lower role but
+                    # depends on a higher-role subtask.
+                    note = f"dropped_reverse_edge:{dep_st['role']}->{st['role']}"
+                elif _can_reach(dep_id, st["id"]):
+                    # Cycle: dep already (transitively) depends on this subtask.
+                    note = f"dropped_cycle_edge:{dep_id}->{st['id']}"
+            if note is not None:
+                st.setdefault("normalized_notes", []).append(note)
+            else:
+                clean_deps.append(dep_id)
+        st["depends_on"] = clean_deps
+
+    return subtasks
+
 
 def _parse_round_plan(raw: str, *, round_n: int, allowed_models: list[str],
                       default_model: str,
                       allowed_efforts: list[str] | None = None,
                       default_effort: str = "medium") -> dict:
+    """Parse a Codex round-plan response (JSON or fenced JSON block).
+
+    Accepts either the legacy flat JSON shape or the merged-envelope shape
+    introduced by A1. The merged envelope wraps round-plan fields under
+    ``round_plan`` and adds prompt-content fields (``task_description``,
+    ``execution_plan_bullets``, ``acceptance_criteria``, ``carry_forward``)
+    at the top level or under a ``prompt_content`` key.
+
+    Returns a normalized dict. ``scope`` and ``complexity`` fields are NOT
+    included (removed by C1a and A3 respectively).
+    """
     import re as _re
 
     text = raw.strip()
     if text.startswith("```"):
         text = _re.sub(r"^```(?:json)?\s*", "", text)
         text = _re.sub(r"\s*```$", "", text).strip()
+    parse_failed = False
     try:
-        plan = _json.loads(text)
+        envelope = _json.loads(text)
     except _json.JSONDecodeError:
+        envelope = {}
+        parse_failed = True
+    if not isinstance(envelope, dict):
+        envelope = {}
+        parse_failed = True
+
+    # Support merged-envelope shape: if top-level has "round_plan" sub-object,
+    # use it for routing fields; prompt-content fields live at top level or
+    # under "prompt_content".
+    if "round_plan" in envelope and isinstance(envelope["round_plan"], dict):
+        plan = envelope["round_plan"]
+        pc = envelope.get("prompt_content") or envelope
+    elif "round_plan" in envelope:
+        # round_plan key is present but not a dict (e.g. list, string, null).
+        # Treat as a parse failure so the safety flag is surfaced.
+        parse_failed = True
         plan = {}
-    if not isinstance(plan, dict):
-        plan = {}
+        pc = envelope
+    else:
+        plan = envelope
+        pc = envelope
 
     worker_model = plan.get("worker_model", default_model)
     if worker_model not in allowed_models:
         worker_model = default_model
-    scope = plan.get("scope", "normal")
-    if scope not in ("narrow", "normal", "broad"):
-        scope = "normal"
 
     # Normalize reasoning_effort. Missing, non-string, or out-of-allowed
     # values fall back to the configured default. Old Codex outputs that
@@ -393,14 +500,31 @@ def _parse_round_plan(raw: str, *, round_n: int, allowed_models: list[str],
         default_effort=reasoning_effort,
     )
 
+    # Prompt-content fields (A1/A2 merged envelope). Safe defaults used if
+    # the field is absent (legacy flat shape or parse failure).
+    def _str_field(key: str) -> str:
+        val = pc.get(key, "")
+        return str(val).strip() if val else ""
+
+    def _list_field(key: str) -> list[str]:
+        val = pc.get(key)
+        if isinstance(val, list):
+            return [str(x) for x in val if str(x).strip()]
+        return []
+
     return {
         "round": round_n,
         "worker_model": worker_model,
         "worker_model_reason": _normalize_reason(plan.get("worker_model_reason")),
-        "scope": scope,
         "reasoning_effort": reasoning_effort,
-        "complexity": plan.get("complexity") if isinstance(plan.get("complexity"), dict) else {},
         "subtasks": subtasks,
+        # Prompt-content fields (A2)
+        "task_description": _str_field("task_description"),
+        "execution_plan_bullets": _list_field("execution_plan_bullets"),
+        "acceptance_criteria": _list_field("acceptance_criteria"),
+        "carry_forward": _str_field("carry_forward"),
+        # B1: parse failure flag — True when the raw JSON was malformed or non-dict.
+        "parse_failed": parse_failed,
     }
 
 
@@ -408,9 +532,8 @@ def _render_worker_model_block(round_plan: dict, allowed_efforts: list[str] | No
     """Render the canonical ## Worker Model section for a worker prompt.
 
     Kept short and parseable: one model token + one-sentence reason on one line,
-    an explicit scope line, and an explicit reasoning-effort line. The worker
-    scans for this block to decide how broadly to read and how hard to
-    think; the supervisor uses it to confirm routing.
+    and an explicit reasoning-effort line. The worker scans for this block to
+    decide how hard to think; the supervisor uses it to confirm routing.
 
     Defensively re-normalizes ``worker_model_reason`` so even ad-hoc callers
     that build the dict without going through ``_parse_round_plan`` cannot
@@ -418,6 +541,9 @@ def _render_worker_model_block(round_plan: dict, allowed_efforts: list[str] | No
     constrained to config-derived allowed_efforts before rendering for the same
     reason; an unrecognized value uses the first allowed effort, or ``medium``
     if it is in the allowed set, ensuring compatibility with custom configs.
+
+    The ``scope`` axis has been removed (C1a). Only ``worker_model`` and
+    ``reasoning_effort`` remain as routing axes.
 
     Args:
         round_plan: The normalized round plan dict with routing and effort values.
@@ -428,7 +554,6 @@ def _render_worker_model_block(round_plan: dict, allowed_efforts: list[str] | No
         allowed_efforts = ["low", "medium", "high"]
     model = round_plan.get("worker_model", "sonnet")
     reason = _normalize_reason(round_plan.get("worker_model_reason"))
-    scope = round_plan.get("scope", "normal")
     effort = round_plan.get("reasoning_effort", "medium")
     if not isinstance(effort, str) or effort not in allowed_efforts:
         # Fallback: prefer "medium" if allowed, otherwise use first allowed effort.
@@ -436,7 +561,6 @@ def _render_worker_model_block(round_plan: dict, allowed_efforts: list[str] | No
     return (
         "## Worker Model\n"
         f"{model} - {reason}\n"
-        f"Scope: {scope}\n"
         f"Reasoning Effort: {effort}\n"
     )
 
@@ -452,17 +576,16 @@ def _render_subtasks_block(subtasks: list[dict]) -> str:
     lines = [
         "### Subtasks (this round)",
         "",
-        "| id | role | model | effort | scope | description |",
-        "|----|------|-------|--------|-------|-------------|",
+        "| id | role | model | effort | description |",
+        "|----|------|-------|--------|-------------|",
     ]
     for st in subtasks:
         sid = st.get("id", "?")
         role = st.get("role", "?")
         model = st.get("model", "?")
         effort = st.get("reasoning_effort", "?")
-        scope = st.get("scope", "?")
         desc = st.get("description", st.get("deliverable", "")).replace("|", "\\|")
-        lines.append(f"| {sid} | {role} | {model} | {effort} | {scope} | {desc} |")
+        lines.append(f"| {sid} | {role} | {model} | {effort} | {desc} |")
     lines.append("")
     lines.append("Each subtask runs as an independent subagent. Implement only your own subtask id.")
     lines.append("Do not read or write files owned by another subtask unless they are in `shared/`.")
@@ -630,9 +753,31 @@ def _cmd_plan_init(args) -> int:
     return 0
 
 
+def _bounded_memo(memo_text: str, max_rounds: int = 3) -> str:
+    """Return a sliding window of the last ``max_rounds`` round blocks from memo.
+
+    Each round block begins with a ``## Round N`` heading. If fewer than
+    ``max_rounds`` blocks exist, all are returned. The on-disk memo.md is
+    unchanged; this function only slices the text for the Codex input.
+    """
+    import re as _re
+    if not memo_text.strip():
+        return memo_text
+    # Find all start positions of "## Round N" headings.
+    boundaries = [m.start() for m in _re.finditer(r"^##\s+Round\s+\d+", memo_text, _re.MULTILINE)]
+    if not boundaries:
+        return memo_text
+    if len(boundaries) <= max_rounds:
+        return memo_text
+    # Return from the (len - max_rounds)-th boundary to the end.
+    start = boundaries[len(boundaries) - max_rounds]
+    return memo_text[:boundaries[0]] + memo_text[start:]
+
+
 @register("plan-round")
 def _cmd_plan_round(args) -> int:
     from agent_loop.codex_client import call_codex, CodexCallError
+    from agent_loop.prompt_render import RoundContext, ReadingList, render_claude_prompt
     repo = _Path(args.repo).resolve()
     run_dir = _run_dir(repo, args.run)
     rs = RunState.load(run_dir / "state.json")
@@ -645,7 +790,8 @@ def _cmd_plan_round(args) -> int:
     plan_path = run_dir / "plan.md"
     plan = plan_path.read_text(encoding="utf-8") if plan_path.exists() else "(no plan.md)"
     memo_path = run_dir / "memo.md"
-    memo = memo_path.read_text(encoding="utf-8") if memo_path.exists() else ""
+    memo_full = memo_path.read_text(encoding="utf-8") if memo_path.exists() else ""
+    memo_bounded = _bounded_memo(memo_full, max_rounds=3)
 
     prev_round = next_n - 1
     last_payload = ""
@@ -654,35 +800,41 @@ def _cmd_plan_round(args) -> int:
         if ppath.exists():
             last_payload = ppath.read_text(encoding="utf-8")
 
-    round_plan_prompt = f"""You are selecting the Claude worker model, scope, reasoning effort, and subtask breakdown for round {next_n}.
+    round_plan_prompt = f"""You are selecting the Claude worker model, reasoning effort, and subtask breakdown for round {next_n}.
 
 Output ONLY JSON with this schema:
 {{
-  "round": {next_n},
-  "worker_model": "<one of: {', '.join(allowed_models)}>",
-  "worker_model_reason": "<one sentence>",
-  "scope": "narrow|normal|broad",
-  "reasoning_effort": "{'|'.join(allowed_efforts)}",
-  "complexity": {{
-    "files_expected": <integer>,
-    "requires_architecture": <boolean>,
-    "requires_broad_search": <boolean>,
-    "risk": "low|medium|high"
+  "round_plan": {{
+    "round": {next_n},
+    "worker_model": "<one of: {', '.join(allowed_models)}>",
+    "worker_model_reason": "<one sentence>",
+    "reasoning_effort": "{'|'.join(allowed_efforts)}",
+    "subtasks": [
+      {{
+        "id": "<round-unique string, e.g. r{next_n}-a1>",
+        "role": "analysis|implementation|verification",
+        "model": "<one of: {', '.join(allowed_models)}>",
+        "reasoning_effort": "{'|'.join(allowed_efforts)}",
+        "description": "<one sentence>",
+        "required_reading": ["<path>"],
+        "out_of_scope": ["<path-or-pattern>"],
+        "depends_on": ["<same-round subtask id>"],
+        "deliverable": "<what this subtask must produce>"
+      }}
+    ]
   }},
-  "subtasks": [
-    {{
-      "id": "<round-unique string, e.g. r{next_n}-a1>",
-      "role": "analysis|implementation|verification",
-      "model": "<one of: {', '.join(allowed_models)}>",
-      "reasoning_effort": "{'|'.join(allowed_efforts)}",
-      "scope": "narrow|normal|broad",
-      "description": "<one sentence>",
-      "required_reading": ["<path>"],
-      "out_of_scope": ["<path-or-pattern>"],
-      "depends_on": ["<same-round subtask id>"],
-      "deliverable": "<what this subtask must produce>"
-    }}
-  ]
+  "task_description": "<one paragraph describing what the worker must accomplish this round>",
+  "execution_plan_bullets": [
+    "<step 1 — concrete: name files, edits, commands>",
+    "<step 2>",
+    "..."
+  ],
+  "acceptance_criteria": [
+    "<checkable bullet 1>",
+    "<checkable bullet 2>",
+    "..."
+  ],
+  "carry_forward": "<bullet summary of what to carry from previous round, or empty string>"
 }}
 
 Model selection rules:
@@ -695,10 +847,7 @@ Reasoning-effort selection rules (independent from model selection):
 - medium: normal integration work; some judgement and pattern matching required.
 - high: architecture, broad debugging, or high-risk cross-cutting changes; deep reasoning required.
 
-Model and reasoning_effort are two independent axes. A `broad` scope can still pick
-`low` effort if the changes are mostly mechanical, and a `narrow` scope can pick
-`high` effort if the few changes touch deep architecture. Do NOT collapse the two
-choices.
+Model and reasoning_effort are two independent axes. Do NOT collapse the two choices.
 
 Subtask rules:
 - analysis subtasks: MUST NOT modify source code or configs. Write only to shared files.
@@ -710,7 +859,7 @@ Subtask rules:
 - Each subtask required_reading is capped at 5 paths; split the subtask if more are needed.
 - opus subtasks require justification in the description.
 
-The round-level worker_model, scope, and reasoning_effort are the "dominant character"
+The round-level worker_model and reasoning_effort are the "dominant character"
 summary for the user announce line. Per-subtask model/effort govern actual dispatch.
 
 If the ideal model is unavailable, choose the closest allowed model from the list.
@@ -723,7 +872,7 @@ If `reasoning_effort` is unclear, prefer `{default_effort}`.
 {plan}
 
 ## Memo So Far
-{memo or "(empty -- first round)"}
+{memo_bounded or "(empty -- first round)"}
 
 ## Previous Review Payload (round {prev_round})
 {last_payload or "(none -- first round)"}
@@ -742,75 +891,63 @@ If `reasoning_effort` is unclear, prefer `{default_effort}`.
         default_effort=default_effort,
     )
 
-    meta_prompt = f"""You are drafting the Claude worker prompt for round {next_n}.
+    # Build the worker prompt using the Python template (A2).
+    # Collect the union of required_reading from all subtasks.
+    all_required_reading: list[tuple[str, str]] = []
+    seen_paths: set[str] = set()
+    for st in round_plan.get("subtasks", []):
+        for path in st.get("required_reading", []):
+            if path not in seen_paths:
+                all_required_reading.append((path, ""))
+                seen_paths.add(path)
 
-Write ONLY the prompt body (markdown). It MUST include these sections:
-- ## Carry-Forward From Previous Round
-- ## Goal
-- ## Worker Model
-- ## Task (this round)
-- ## Execution Plan
-- ## Acceptance Criteria
-- ## Required Reading (read these first, in order)
-- ## Suggested Reading (only if needed)
-- ## Out of Scope (do not Read/Edit/Write)
-- ## External References
-- ## Mandatory Outputs (progress.md, claude-result.md schema, shared/* discipline)
-- ## Reading List Discipline
-- ## Forbidden Actions
-- ## claude-result.md schema
+    # Collect out_of_scope union from all subtasks.
+    all_out_of_scope: list[str] = []
+    seen_oos: set[str] = set()
+    for st in round_plan.get("subtasks", []):
+        for path in st.get("out_of_scope", []):
+            if path not in seen_oos:
+                all_out_of_scope.append(path)
+                seen_oos.add(path)
 
-Use the goal, plan, memo, and previous review payload (if any) to fill these in.
-Make the Execution Plan concrete enough that the worker can mostly execute it
-without re-planning: name likely files, exact edits, tests, and verification
-commands when inferable. Keep it scoped to one round.
+    run_dir_rel = str(_Path(".agent-loop") / "runs" / args.run)
+    round_dir_rel = str(_Path(".agent-loop") / "runs" / args.run / "rounds" / f"{next_n:02d}")
+    shared_dir_rel = str(_Path(".agent-loop") / "runs" / args.run / "shared")
 
-Use the worker model selection to calibrate scope:
-- haiku: keep the task narrow and mechanical; Required Reading should be enough.
-- sonnet: normal integration task; allow limited Suggested Reading.
-- opus: permit broader investigation when necessary, but require reasons in Plan Deviations.
+    # Build task text from Codex content fields.
+    task_desc = round_plan.get("task_description", "")
+    ep_bullets = round_plan.get("execution_plan_bullets", [])
+    ac_bullets = round_plan.get("acceptance_criteria", [])
 
-The `## Worker Model` section MUST include `Reasoning Effort: <low|medium|high>`
-on its own line, taken verbatim from the Worker Model Selection JSON. Use the
-reasoning-effort value to calibrate how much exploration the worker should
-budget before editing:
-- low: follow the Execution Plan step-by-step; minimal Suggested Reading.
-- medium: light exploration around Required Reading is fine; pattern-match across files.
-- high: deeper exploration of related modules is allowed when the task is genuinely
-  ambiguous, architectural, or cross-cutting; but every code reading or deviation
-  beyond the Execution Plan must still be recorded under `## Plan Deviations`.
+    task_parts = []
+    if task_desc:
+        task_parts.append(task_desc)
+    if ep_bullets:
+        task_parts.append("\n## Execution Plan\n" + "\n".join(f"{i+1}. {b}" for i, b in enumerate(ep_bullets)))
+    if ac_bullets:
+        task_parts.append("\n## Acceptance Criteria\n" + "\n".join(f"- {b}" for b in ac_bullets))
+    task_text = "\n\n".join(task_parts) if task_parts else "(no task description provided)"
 
-Acceptance Criteria must be checkable bullets. Include expected tests or manual
-verification.
+    carry_fwd = round_plan.get("carry_forward", "") or "(none)"
 
-The worker may deviate from the Execution Plan only when reading the code shows
-the plan is wrong or incomplete. In that case, the prompt must require the
-worker to record the deviation and reason under `## Plan Deviations` in
-`claude-result.md`. If a `high` reasoning effort produces broader changes than
-the Execution Plan anticipated, document the broader changes there too.
-
-Keep Required Reading to <= 4 paths. Out of Scope must cover unrelated top-level dirs.
-
-## Goal
-{goal}
-
-## Plan
-{plan}
-
-## Worker Model Selection
-{_json.dumps(round_plan, indent=2)}
-
-## Memo So Far
-{memo or "(empty -- first round)"}
-
-## Previous Review Payload (round {prev_round})
-{last_payload or "(none -- first round)"}
-"""
-    try:
-        res = call_codex(meta_prompt)
-    except CodexCallError as e:
-        print(f"codex error: {e}", file=sys.stderr)
-        return 1
+    ctx = RoundContext(
+        round_n=next_n,
+        goal=goal,
+        task=task_text,
+        carry_forward=carry_fwd,
+        reading=ReadingList(
+            required=all_required_reading,
+            suggested=[],
+            out_of_scope=all_out_of_scope,
+            references=[],
+        ),
+        run_dir_rel=run_dir_rel,
+        shared_dir_rel=shared_dir_rel,
+        round_dir_rel=round_dir_rel,
+    )
+    prompt_body = render_claude_prompt(ctx)
+    prompt_body = _ensure_worker_model_section(prompt_body, round_plan, allowed_efforts=allowed_efforts)
+    prompt_body = _inject_subtasks_section(prompt_body, round_plan.get("subtasks", []))
 
     rd = run_dir / "rounds" / f"{next_n:02d}"
     rd.mkdir(parents=True, exist_ok=True)
@@ -821,8 +958,6 @@ Keep Required Reading to <= 4 paths. Out of Scope must cover unrelated top-level
     round_plan_path.write_text(_json.dumps(round_plan, indent=2) + "\n", encoding="utf-8")
     # Write compatibility alias for tooling that still uses the hyphenated name.
     (rd / "round-plan.json").write_text(_json.dumps(round_plan, indent=2) + "\n", encoding="utf-8")
-    prompt_body = _ensure_worker_model_section(res.final_text, round_plan, allowed_efforts=allowed_efforts)
-    prompt_body = _inject_subtasks_section(prompt_body, round_plan.get("subtasks", []))
     (rd / "claude-prompt.md").write_text(prompt_body, encoding="utf-8")
     rs.start_round(n=next_n, started_at=_dt.datetime.utcnow().isoformat())
     rs.save(run_dir / "state.json")
@@ -833,7 +968,6 @@ Keep Required Reading to <= 4 paths. Out of Scope must cover unrelated top-level
         "round_plan_path": str(round_plan_path),
         "worker_model": round_plan["worker_model"],
         "worker_model_reason": round_plan["worker_model_reason"],
-        "scope": round_plan["scope"],
         "reasoning_effort": round_plan["reasoning_effort"],
         "subtasks": subtasks,
         "subtask_count": len(subtasks),
@@ -909,6 +1043,34 @@ def _append_memo_idempotent(memo_path: _Path, round_n: int, block: str) -> bool:
     return True
 
 
+def _scan_verification_outcomes(progress_path: "_Path") -> "list[dict]":
+    """B3: Scan rounds/NN/progress.md for verification outcome lines.
+
+    Recognises lines of the form:
+      [done] <subtask_id> verification: pass[<optional note>]
+      [done] <subtask_id> verification: fail[<optional note>]
+
+    Returns a list of dicts ``{subtask_id, status, note}``. If the file is
+    absent or contains no matching lines, returns an empty list.
+    """
+    import re as _re
+
+    if not progress_path.exists():
+        return []
+    text = progress_path.read_text(encoding="utf-8")
+    outcomes: list[dict] = []
+    pattern = _re.compile(
+        r"^\[done\]\s+(\S+)\s+verification:\s*(pass|fail)(.*)?$",
+        _re.IGNORECASE | _re.MULTILINE,
+    )
+    for m in pattern.finditer(text):
+        subtask_id = m.group(1).strip()
+        status = m.group(2).lower()
+        note = (m.group(3) or "").strip().lstrip("-—").strip()
+        outcomes.append({"subtask_id": subtask_id, "status": status, "note": note})
+    return outcomes
+
+
 @register("review-round")
 def _cmd_review_round(args) -> int:
     import re
@@ -941,12 +1103,27 @@ def _cmd_review_round(args) -> int:
 
     safety_flags: list[str] = ["diff_has_sensitive"] if stats.sensitive_hits else []
 
+    # B1: Check if this round's plan had a parse failure; surface as safety flag.
+    round_plan_path = rd / "round_plan.json"
+    if not round_plan_path.exists():
+        round_plan_path = rd / "round-plan.json"
+    if round_plan_path.exists():
+        try:
+            rp_data = _json.loads(round_plan_path.read_text(encoding="utf-8"))
+            if rp_data.get("parse_failed"):
+                safety_flags.append("round_plan_parse_failed")
+        except (_json.JSONDecodeError, OSError):
+            safety_flags.append("round_plan_parse_failed")
+
     result_path = rd / "claude-result.md"
     if result_path.exists():
         result = parse_result(result_path)
     else:
         result = ClaudeResult(summary="(no claude-result.md found)")
         safety_flags.append("missing_claude_result")
+
+    # B3: Scan progress.md for verification outcomes.
+    verification_outcomes = _scan_verification_outcomes(rd / "progress.md")
 
     delta = SharedDelta()
     goal_summary = (run_dir / "goal.md").read_text(encoding="utf-8").strip().splitlines()[0]
@@ -964,6 +1141,7 @@ def _cmd_review_round(args) -> int:
             "messages": "",
         },
         safety_flags=safety_flags,
+        verification_outcomes=verification_outcomes,
     )
 
     memo_path = run_dir / "memo.md"

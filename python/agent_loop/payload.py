@@ -20,6 +20,7 @@ def build_review_payload(
     shared_delta: SharedDelta,
     artifact_paths: dict[str, str],
     safety_flags: list[str],
+    verification_outcomes: list[dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
     payload: dict[str, Any] = {
         "round": round_n,
@@ -49,6 +50,8 @@ def build_review_payload(
             "decisions": shared_delta.decisions,
             "open_questions": shared_delta.open_questions,
         },
+        # B3: verification subtask outcomes parsed from progress.md.
+        "verification_outcomes": verification_outcomes if verification_outcomes is not None else [],
     }
     if out_path is not None:
         out_path.parent.mkdir(parents=True, exist_ok=True)

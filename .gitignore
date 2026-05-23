@@ -4,6 +4,8 @@ __pycache__/
 *$py.class
 *.egg-info/
 .pytest_cache/
+.tmp-pycache/
+tmp_pycache/
 .venv/
 
 # Plugin dev artifacts
