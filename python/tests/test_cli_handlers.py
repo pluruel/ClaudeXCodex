@@ -137,3 +137,79 @@ def test_inspect_refuses_paths_outside_run_dir(tmp_repo: Path) -> None:
     )
     assert r2.returncode == 1
     assert "outside run directory" in r2.stdout
+
+
+def _seed_inspect_file(tmp_repo: Path, n: int = 100) -> str:
+    """Create a 1..n-line diff.patch under round 01 and return the run_id."""
+    r1 = _run(["init-run", "--goal", "g", "--slug", "s"], cwd=tmp_repo)
+    run_id = json.loads(r1.stdout)["run_id"]
+    rdir = tmp_repo / ".agent-loop" / "runs" / run_id / "rounds" / "01"
+    rdir.mkdir(parents=True)
+    (rdir / "diff.patch").write_text(
+        "\n".join(f"line {i}" for i in range(1, n + 1)),
+        encoding="utf-8",
+    )
+    return run_id
+
+
+def test_inspect_lines_first_n(tmp_repo: Path) -> None:
+    """``--lines 80`` returns the first 80 lines without crashing.
+
+    Round 1's implementation split on ``-`` and unpacked the result into
+    ``a, b``; a single int crashed with ``ValueError: not enough values to
+    unpack``. The fix interprets ``N`` as ``(1, N)``.
+    """
+    run_id = _seed_inspect_file(tmp_repo, n=100)
+    r = _run(
+        ["inspect", "--run", run_id, "--round", "1",
+         "--file", "diff.patch", "--lines", "80"],
+        cwd=tmp_repo,
+    )
+    assert r.returncode == 0, r.stderr
+    lines = r.stdout.splitlines()
+    assert lines[0] == "line 1"
+    assert lines[-1] == "line 80"
+    assert len(lines) == 80
+
+
+def test_inspect_lines_from_n_onward(tmp_repo: Path) -> None:
+    """``--lines 50-`` (open right bound) reads from line N through EOF."""
+    run_id = _seed_inspect_file(tmp_repo, n=100)
+    r = _run(
+        ["inspect", "--run", run_id, "--round", "1",
+         "--file", "diff.patch", "--lines", "50-"],
+        cwd=tmp_repo,
+    )
+    assert r.returncode == 0, r.stderr
+    lines = r.stdout.splitlines()
+    assert lines[0] == "line 50"
+    assert lines[-1] == "line 100"
+    assert len(lines) == 51
+
+
+def test_inspect_lines_range(tmp_repo: Path) -> None:
+    """``--lines 10-30`` continues to behave as an inclusive range."""
+    run_id = _seed_inspect_file(tmp_repo, n=100)
+    r = _run(
+        ["inspect", "--run", run_id, "--round", "1",
+         "--file", "diff.patch", "--lines", "10-30"],
+        cwd=tmp_repo,
+    )
+    assert r.returncode == 0, r.stderr
+    lines = r.stdout.splitlines()
+    assert lines[0] == "line 10"
+    assert lines[-1] == "line 30"
+    assert len(lines) == 21
+
+
+def test_inspect_lines_invalid_spec_reports_clear_error(tmp_repo: Path) -> None:
+    """Malformed ``--lines`` exits non-zero with an error JSON, not a crash."""
+    run_id = _seed_inspect_file(tmp_repo, n=20)
+    r = _run(
+        ["inspect", "--run", run_id, "--round", "1",
+         "--file", "diff.patch", "--lines", "abc"],
+        cwd=tmp_repo,
+    )
+    assert r.returncode == 1
+    assert "Traceback" not in r.stderr
+    assert "--lines" in r.stdout

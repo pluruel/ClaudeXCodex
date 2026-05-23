@@ -1,7 +1,7 @@
 {
   "name": "agent-loop",
   "displayName": "Agent Loop",
-  "version": "0.2.1",
+  "version": "0.3.0",
   "description": "Claude-supervised review loop with Codex (subscription-headless) as planner/reviewer and Claude subagents as workers",
   "author": {
     "name": "Junnoh Lee",

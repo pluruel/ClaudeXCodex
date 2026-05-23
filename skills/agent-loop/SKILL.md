@@ -57,20 +57,44 @@ mode = "debug"
 ## Worker model selection
 
 `plan-round` emits `worker_model` (`haiku`, `sonnet`, or `opus` by default),
-`worker_model_reason`, and `round_plan_path`. Use that model for the Task
-dispatch if Claude Code exposes a model override in this environment. If no
-model override is available, still include the selected model in the worker
-prompt and let it constrain scope:
+`worker_model_reason`, `scope` (`narrow` | `normal` | `broad`), and
+`round_plan_path`. The CLI ALSO injects a canonical `## Worker Model` section
+into the generated `claude-prompt.md`, so the worker subagent sees the same
+routing decision even when it is dispatched without a model override.
 
-- `haiku` - narrow, mechanical, mostly execute the provided plan
-- `sonnet` - normal integration work
-- `opus` - broad or high-risk work where deeper reasoning is expected
+How to act on it when dispatching the Task tool:
+
+1. If Claude Code exposes a per-call model override in this environment, set
+   it to the selected `worker_model`. The Task tool's accepted aliases vary
+   across environments; use whichever of `haiku` / `sonnet` / `opus` (or their
+   environment-specific full IDs) the tool accepts. If the tool rejects the
+   alias, fall back to step 2 -- do not silently route to a different model.
+2. Always paste `worker_model`, `worker_model_reason`, and `scope` verbatim
+   into the worker prompt's leading lines (see the Task dispatch sample
+   below). The CLI-injected `## Worker Model` section inside
+   `claude-prompt.md` is the durable record; the supervisor's restated lines
+   are a visible reminder.
+
+Scope-to-effort mapping (use to choose / justify the model and to constrain
+the worker even when no model override is available):
+
+- `narrow` + `haiku` - mechanical, mostly execute the provided plan, minimal
+  Suggested Reading
+- `normal` + `sonnet` - integration work, moderate uncertainty, limited
+  Suggested Reading allowed
+- `broad` + `opus` - architecture / broad debugging / high-risk safety or
+  security changes; deeper reasoning expected, deviations must be justified
+  in `claude-result.md`
+
+If `scope` and `worker_model` disagree (e.g. `broad` + `haiku`), trust the
+model alias for routing but raise the mismatch with the user before
+dispatching -- this usually indicates the round plan needs another pass.
 
 ## Context discipline (mandatory)
 
 - You never read full diffs, test logs, claude-result.md, claude-prompt.md, or codex-review.md. Not even "one quick pass." The memo is auto-composed by `review-round`; you have no reason to open the review file.
 - You only ingest the small JSON each CLI subcommand emits.
-- For details, you can run the CLI's `inspect` subcommand with narrow `--lines` to extract a slice — but only when JSON is genuinely insufficient (rare).
+- For details, you can run the CLI's `inspect` subcommand with narrow `--lines` to extract a slice — but only when JSON is genuinely insufficient (rare). `--lines` accepts `N` (first N), `N-` (from N onward), or `A-B` (range). Example: `agent-loop inspect --run <id> --round N --file claude-result.md --lines 80`.
 - You never call `codex exec` or `codex` directly — always via the CLI's `plan-init|plan-round|review-round` subcommands.
 
 ## On start (`/agent-loop <goal text>`)
@@ -86,19 +110,56 @@ prompt and let it constrain scope:
 For each round N (starting at 1):
 
 1. `Bash: "${CLAUDE_PLUGIN_ROOT}/bin/agent-loop" plan-round --run <run_id>`
-   → JSON `{round_n, prompt_path, round_plan_path, worker_model, worker_model_reason, summary}`. (Codex drafted the worker prompt and selected the worker model.)
+   → JSON `{round_n, prompt_path, round_plan_path, worker_model, worker_model_reason, scope, summary}`. (Codex drafted the worker prompt and selected the worker model; the CLI normalized the selection and injected a `## Worker Model` section into the prompt.)
 2. `Bash: "${CLAUDE_PLUGIN_ROOT}/bin/agent-loop" capture-baseline`
    → JSON `{baseline}`. Save the sha.
-3. `Bash: "${CLAUDE_PLUGIN_ROOT}/bin/agent-loop" mark-dispatched --run <run_id> --round N`
+3. **Announce the round to the user** (one line, verbatim format, BEFORE dispatch):
+
+   ```
+   Round N — worker: <worker_model> (<worker_model_reason>), scope: <scope>
+   ```
+
+   Use the values returned by `plan-round` in step 1. This is the only piece of
+   round-level routing information that surfaces to the user without them having
+   to open files; do not skip it, do not paraphrase it.
+
+4. `Bash: "${CLAUDE_PLUGIN_ROOT}/bin/agent-loop" mark-dispatched --run <run_id> --round N`
    → JSON `{round, phase}`. This records that the worker handoff started.
-4. **Dispatch worker subagent via Task tool.** The subagent inherits `${CLAUDE_PLUGIN_ROOT}` from the supervisor. The subagent prompt:
+
+   ### Worker model dispatch
+
+   The Task tool's per-call model parameter is environment-dependent. Two
+   regimes you may encounter:
+
+   - **Per-call `model` supported** (current Claude Code default in most
+     environments): pass `model: <worker_model>` as a top-level Task argument
+     (alongside `description` and `prompt`). The accepted aliases vary —
+     `haiku` / `sonnet` / `opus` are the canonical short forms; full IDs (e.g.
+     `claude-haiku-4-5`, `claude-sonnet-4-7`, `claude-opus-4-7`) also work
+     when the host accepts them. If the alias is rejected, do NOT silently
+     route to the default — fall back to the next bullet.
+   - **Per-call `model` NOT supported** (some embedded / restricted hosts):
+     omit the `model` field. The CLI-injected `## Worker Model` section
+     already inside `claude-prompt.md` is the durable record of which model
+     the worker is scoped to, and the leading lines of the Task prompt (see
+     example below) restate it visibly. The subagent will run on the host's
+     default model but stay scoped to the worker_model-shaped task because
+     the prompt itself was sized for that model.
+
+   Either way, the `Round N — worker: …` echo line from step 3 stays visible
+   in the supervisor transcript, so the user can see the routing decision
+   regardless of which dispatch regime applies.
+
+5. **Dispatch worker subagent via Task tool.** The subagent inherits `${CLAUDE_PLUGIN_ROOT}` from the supervisor. If the Task tool accepts a per-call model override, set it to `<worker_model>`. The subagent prompt:
 
    ```
    Task tool (general-purpose):
      description: "Worker round N for <run_id>"
+     model: <worker_model>   # haiku | sonnet | opus — drop this field if the host rejects per-call model
      prompt: |
        Codex selected worker model: <worker_model>
        Reason: <worker_model_reason>
+       Scope: <scope>                                            # narrow | normal | broad
        Read .agent-loop/runs/<run_id>/rounds/NN/claude-prompt.md and implement
        what it specifies. Strict rules:
        - Follow the Required Reading list in that prompt. Do NOT read Out of Scope.
@@ -124,9 +185,9 @@ For each round N (starting at 1):
          The supervisor reads state.json and review JSON for everything else.
    ```
 
-5. After Task tool returns, run: `Bash: "${CLAUDE_PLUGIN_ROOT}/bin/agent-loop" review-round --run <run_id> --round N`
+6. After Task tool returns, run: `Bash: "${CLAUDE_PLUGIN_ROOT}/bin/agent-loop" review-round --run <run_id> --round N`
    → JSON `{decision, review_path, safety_flags, memo_appended, memo_path}`. Decision is one of APPROVE / NEEDS_CHANGES / STOP_FOR_USER. `review-round` automatically parses the Codex review and appends the round memo to `memo.md`; do not call `append-memo` yourself.
-6. Branch on `decision`:
+7. Branch on `decision`:
    - `APPROVE` → `Bash: "${CLAUDE_PLUGIN_ROOT}/bin/agent-loop" finalize --run <run_id>`. Tell the user the run completed; point them at `final-report.md`. END.
    - `STOP_FOR_USER` → Tell the user the loop paused; show `safety_flags` and point at `codex-review.md` (for the human, not for you). END.
    - `NEEDS_CHANGES` → Loop back to step 1 (next round).
@@ -137,18 +198,18 @@ For each round N (starting at 1):
    → JSON `{action, notes, options, run_id, current_round}`.
 2. Interpret `action`:
    - `plan_round` → start a fresh round at step 1 of the round loop
-   - `dispatch` → go to step 3 (`mark-dispatched`), then dispatch the worker
-   - `advance_to_review` → worker result exists but review has not run; go straight to step 5 (`review-round`)
+   - `dispatch` → re-announce the round (step 3), run `mark-dispatched` (step 4), then dispatch the worker (step 5)
+   - `advance_to_review` → worker result exists but review has not run; go straight to step 6 (`review-round`)
    - `write_review` → same as `advance_to_review`: run review-round (also re-composes memo if missing)
    - `write_memo` → review-round was interrupted before memo append. Re-run review-round; it will re-invoke Codex and re-append the memo idempotently.
-   - `branch_decision` → review and memo are done; go straight to step 6 (decision branch)
+   - `branch_decision` → review and memo are done; go straight to step 7 (decision branch)
    - `finalize` → call finalize if the last completed round was approved
    - `user_confirm` → tell the user the options and wait
 
 ## Forbidden actions
 
 - Never run `git commit`, `git push`, or any destructive command yourself.
-- Never read full diff/result/log files into your context. Use the `inspect` subcommand with narrow `--lines` only when the JSON status is insufficient.
+- Never read full diff/result/log files into your context. Use the `inspect` subcommand with narrow `--lines` only when the JSON status is insufficient. `--lines` accepts `N` (first N), `N-` (from N onward), or `A-B` (range).
 - Never invent CLI behavior — if a subcommand's JSON doesn't match what you expected, stop and report to the user.
 
 ## File path conventions

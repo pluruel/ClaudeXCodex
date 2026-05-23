@@ -9,6 +9,17 @@ __pycache__/
 # Plugin dev artifacts
 python/.venv/
 
+# Codex CLI sandbox probe directory.
+# Codex CLI 0.133.x writes ~200 four-byte "blat" probe files into a
+# `.codex-tmp/` subdir of the spawning process's cwd during `codex exec`
+# (used to verify the sandbox can write into the workspace). The files
+# are not cleaned up automatically; pytest sessions trigger this by
+# spawning codex as a child process. Our conftest.py session-finish hook
+# removes the directory, but in case of an aborted run we don't want
+# these probe files to land in git status.
+.codex-tmp/
+**/.codex-tmp/
+
 # Local agent-loop runs (never commit user run logs)
 .agent-loop/
 

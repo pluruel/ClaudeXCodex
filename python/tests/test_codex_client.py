@@ -133,6 +133,132 @@ def test_call_codex_handles_new_schema_last_agent_message_wins() -> None:
     assert res.final_text == "second"
 
 
+def test_call_codex_large_prompt_uses_stdin_not_argv() -> None:
+    """Regression: prompts >= 8KB must travel via stdin (input=...) and never argv.
+
+    Windows cmd.exe caps argv at 8191 chars; codex's `.cmd` wrapper eats further
+    into that budget. Passing a large prompt as an argv element corrupts the
+    invocation. The source-of-truth runner contract is:
+
+      - cmd ends with the literal ``"-"`` (codex's "read prompt from stdin" sentinel)
+      - the prompt is delivered via ``input=<prompt>``, never appended to ``cmd``
+    """
+    big_prompt = "abc " * 2048  # 8192 chars, well past the cmd.exe argv ceiling
+    assert len(big_prompt) >= 8000
+
+    seen: dict = {}
+
+    def _runner(cmd, **kwargs):
+        seen["cmd"] = list(cmd)
+        seen["input"] = kwargs.get("input")
+
+        class R:
+            returncode = 0
+            stdout = '{"type": "assistant_message", "content": "ok"}\n'
+            stderr = ""
+
+        return R()
+
+    res = call_codex(big_prompt, runner=_runner)
+    assert res.final_text == "ok"
+    # stdin contract
+    assert seen["input"] == big_prompt
+    # argv contract: ends with the "-" stdin sentinel, and the prompt is NOT in argv
+    assert seen["cmd"][-1] == "-"
+    assert big_prompt not in seen["cmd"]
+
+
+def test_call_codex_sweeps_probe_dirs_after_return(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """call_codex must rmtree .tmp/ and .codex-tmp/ probe dirs after the codex
+    subprocess returns, mirroring codex 0.133's sandbox probe-cleanup signature
+    (4-byte files with short random alphanumeric names)."""
+    monkeypatch.chdir(tmp_path)
+
+    def _runner(cmd, **kwargs):
+        # Simulate codex sandbox: drop ~probe files into .tmp/ and .codex-tmp/.
+        for dirname in (".tmp", ".codex-tmp"):
+            d = Path.cwd() / dirname
+            d.mkdir(exist_ok=True)
+            (d / "aaaaaa").write_bytes(b"blat")
+            (d / "bbbbbb").write_bytes(b"blat")
+            (d / "ccc123").write_bytes(b"blat")
+
+        class R:
+            returncode = 0
+            stdout = '{"type": "assistant_message", "content": "ok"}\n'
+            stderr = ""
+
+        return R()
+
+    res = call_codex("hi", runner=_runner)
+    assert res.final_text == "ok"
+    assert not (tmp_path / ".tmp").exists(), ".tmp/ probe dir should be swept"
+    assert not (tmp_path / ".codex-tmp").exists(), (
+        ".codex-tmp/ probe dir should be swept"
+    )
+
+
+def test_call_codex_preserves_user_dir_with_real_content(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A .tmp/ directory that contains a README (i.e. a real user dir that
+    happens to share the name) must NOT be removed -- only directories whose
+    every entry matches the codex probe signature are eligible for sweep."""
+    monkeypatch.chdir(tmp_path)
+
+    def _runner(cmd, **kwargs):
+        d = Path.cwd() / ".tmp"
+        d.mkdir(exist_ok=True)
+        # Real user content: name doesn't match probe regex AND content is
+        # well over the 16-byte probe ceiling. Either of those alone is enough
+        # to abort the sweep for this directory; we use both to be explicit.
+        (d / "README.md").write_text(
+            "this is a real file the user keeps here\n", encoding="utf-8"
+        )
+
+        class R:
+            returncode = 0
+            stdout = '{"type": "assistant_message", "content": "ok"}\n'
+            stderr = ""
+
+        return R()
+
+    res = call_codex("hi", runner=_runner)
+    assert res.final_text == "ok"
+    assert (tmp_path / ".tmp").is_dir(), (
+        "user-owned .tmp/ with real content must be preserved"
+    )
+    assert (tmp_path / ".tmp" / "README.md").is_file(), (
+        "user content inside .tmp/ must not be touched"
+    )
+
+
+def test_call_codex_sweeps_probe_dirs_on_subprocess_error(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """If the codex subprocess raises CalledProcessError, the try/finally
+    cleanup still runs and probe dirs are swept."""
+    import subprocess as _subprocess
+
+    monkeypatch.chdir(tmp_path)
+
+    def _runner(cmd, **kwargs):
+        # Drop probes before raising, mimicking codex crashing partway through.
+        d = Path.cwd() / ".tmp"
+        d.mkdir(exist_ok=True)
+        (d / "aaaaaa").write_bytes(b"blat")
+        (d / "bbbbbb").write_bytes(b"blat")
+        raise _subprocess.CalledProcessError(returncode=1, cmd=cmd)
+
+    with pytest.raises(_subprocess.CalledProcessError):
+        call_codex("hi", runner=_runner)
+    assert not (tmp_path / ".tmp").exists(), (
+        ".tmp/ probe dir must be swept even when codex raised"
+    )
+
+
 def test_default_runner_decodes_utf8_regardless_of_locale(tmp_path, monkeypatch) -> None:
     """Subprocess output must decode as UTF-8 even on cp949 / non-UTF-8 locales."""
     import subprocess

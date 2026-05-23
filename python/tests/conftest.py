@@ -10,6 +10,33 @@ from pathlib import Path
 import pytest
 
 
+# Repo layout:
+#   <repo>/python/tests/conftest.py   <-- this file
+#   <repo>/python/                    <-- pytest's typical cwd (parent of tests/)
+#
+# Codex CLI 0.133.x writes ~200 four-byte "blat" probe files into a `.codex-tmp/`
+# subdir of the spawning process's cwd whenever `codex exec` runs in sandbox
+# mode. Several integration tests (e.g. test_integration_smoke_v2) spawn codex
+# via subprocess; those invocations pollute `python/.codex-tmp/` and the
+# directory accumulates across pytest runs (it is gitignored but still
+# clutters local trees). We sweep it at session-finish.
+_CODEX_TMP_CWD = Path(__file__).resolve().parent.parent / ".codex-tmp"
+
+
+def pytest_sessionfinish(session, exitstatus) -> None:  # noqa: ARG001
+    """Remove Codex CLI sandbox probe directory left in the python/ dir.
+
+    Safe to call when the dir doesn't exist. Errors are intentionally
+    swallowed: the test session's success/failure should not depend on
+    cleanup of probe artifacts.
+    """
+    try:
+        if _CODEX_TMP_CWD.is_dir():
+            shutil.rmtree(_CODEX_TMP_CWD, ignore_errors=True)
+    except OSError:
+        pass
+
+
 # Invocation prefix used by every CLI test. Going through ``python -m agent_loop``
 # keeps the tests independent of the optional ``agent-loop`` entry-point script
 # being on PATH; as long as the package is importable (which the editable install

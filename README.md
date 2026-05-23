@@ -29,11 +29,13 @@ mode = "debug"
 ## Worker model selection
 
 Each `plan-round` asks Codex to choose a worker model alias for the Claude
-subagent: `haiku`, `sonnet`, or `opus`. The selection is written to
-`rounds/NN/round-plan.json` and included in the `plan-round` JSON output. If
+subagent: `haiku`, `sonnet`, or `opus`. The selection (model + reason +
+`scope`) is written to `rounds/NN/round-plan.json`, included in the
+`plan-round` JSON output, AND injected as a canonical `## Worker Model`
+section in the generated `claude-prompt.md` so the worker always sees it. If
 Claude Code supports model-specific Task dispatch in the local environment, the
-supervisor should use that model; otherwise the selected model still scopes the
-worker prompt (`haiku` = narrow/mechanical, `sonnet` = normal integration,
+supervisor should use that model; otherwise the injected section still scopes
+the worker (`haiku` = narrow/mechanical, `sonnet` = normal integration,
 `opus` = broad/high-risk work).
 
 Override the allowed/default aliases per target repo:
@@ -170,3 +172,9 @@ For each round N, the supervisor runs (in order):
 v2 — Claude-entry architecture. The supervisor is Claude; Codex is invoked as a subprocess for planning + review. Both run on subscription (Pro/Max for Claude; ChatGPT Plus for Codex headless).
 
 Recent: per-round memos are now auto-composed by `review-round` (no supervisor reads of review artifacts), and worker replies are constrained to one line — both changes hold supervisor token usage flat across long runs.
+
+## Troubleshooting
+
+### `.tmp/` or `.codex-tmp/` appearing in your repo
+
+Codex CLI 0.133's sandbox writes roughly 200 four-byte "blat" probe files into a `.tmp/` (or `.codex-tmp/`) directory inside the working directory of every `codex exec` invocation. Because agent-loop runs Codex from the repo root for `plan-init`, `plan-round`, and `review-round`, those probes used to leak into the host repo. The Python `call_codex` wrapper now sweeps these directories after every Codex call, using a strict signature check (every entry must be a small file with a short random alphanumeric name), so real user directories that happen to share the names are left untouched. The repo's `.gitignore` also lists `.tmp/` and `.codex-tmp/`, so any probes that escape cleanup still cannot leak into commits. If you ever see these directories sticking around, you can delete them safely — they contain only `blat`.

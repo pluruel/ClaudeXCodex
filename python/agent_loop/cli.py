@@ -105,7 +105,14 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--round", type=int, required=True)
     p.add_argument("--file", required=True)
     p.add_argument("--path", default=None)
-    p.add_argument("--lines", default=None, help="e.g. 12-40")
+    p.add_argument(
+        "--lines",
+        default=None,
+        help=(
+            "line slice. Accepts 'N' (first N), 'N-' (from N onward), "
+            "or 'A-B' (range). 1-indexed and inclusive."
+        ),
+    )
 
     # scout
     p = sub.add_parser("scout", help="emit small repo signal JSON")
@@ -212,6 +219,23 @@ def _worker_model_config(cfg: dict) -> tuple[list[str], str]:
     return allowed, default
 
 
+def _normalize_reason(raw: object) -> str:
+    """Collapse a Codex-supplied reason to a safe single line.
+
+    Codex sometimes returns multiline JSON values for ``worker_model_reason``.
+    A multiline reason would leak ``##`` headings into the worker prompt and
+    push ``Scope:`` outside the canonical ``## Worker Model`` section, so we
+    collapse all whitespace runs (including newlines and tabs) to a single
+    space before storing the reason. An empty or falsy value falls back to a
+    fixed default sentence.
+    """
+    if raw is None:
+        return "default model selected"
+    text = str(raw)
+    collapsed = " ".join(text.split()).strip()
+    return collapsed or "default model selected"
+
+
 def _parse_round_plan(raw: str, *, round_n: int, allowed_models: list[str],
                       default_model: str) -> dict:
     import re as _re
@@ -236,10 +260,83 @@ def _parse_round_plan(raw: str, *, round_n: int, allowed_models: list[str],
     return {
         "round": round_n,
         "worker_model": worker_model,
-        "worker_model_reason": str(plan.get("worker_model_reason") or "default model selected"),
+        "worker_model_reason": _normalize_reason(plan.get("worker_model_reason")),
         "scope": scope,
         "complexity": plan.get("complexity") if isinstance(plan.get("complexity"), dict) else {},
     }
+
+
+def _render_worker_model_block(round_plan: dict) -> str:
+    """Render the canonical ## Worker Model section for a worker prompt.
+
+    Kept short and parseable: one model token + one-sentence reason on one line,
+    followed by an explicit scope line. The worker scans for this block to
+    decide how broadly to read; the supervisor uses it to confirm routing.
+
+    Defensively re-normalizes ``worker_model_reason`` so even ad-hoc callers
+    that build the dict without going through ``_parse_round_plan`` cannot
+    inject extra markdown headings via newlines.
+    """
+    model = round_plan.get("worker_model", "sonnet")
+    reason = _normalize_reason(round_plan.get("worker_model_reason"))
+    scope = round_plan.get("scope", "normal")
+    return (
+        "## Worker Model\n"
+        f"{model} - {reason}\n"
+        f"Scope: {scope}\n"
+    )
+
+
+def _ensure_worker_model_section(prompt_text: str, round_plan: dict) -> str:
+    """Guarantee the worker prompt has a ## Worker Model section that matches.
+
+    Codex sometimes omits the section, mislabels the model, or drifts away from
+    the JSON we already normalized. We rewrite the section so the worker prompt
+    is always the single source of truth for model routing.
+
+    - If a `## Worker Model` heading exists, replace its body (up to the next
+      `## ` heading or EOF) with the canonical block.
+    - Otherwise insert the canonical block immediately after the `## Goal`
+      section (or before `## Task (this round)` if Goal is missing, or at the
+      top of the document if neither anchor is present).
+    """
+    import re as _re
+
+    canonical = _render_worker_model_block(round_plan).rstrip() + "\n"
+    text = prompt_text or ""
+
+    heading_re = _re.compile(
+        r"^##\s+Worker\s+Model\s*\n.*?(?=^##\s+|\Z)",
+        _re.MULTILINE | _re.DOTALL,
+    )
+    if heading_re.search(text):
+        # Use a callable replacement so backslashes or ``\g<...>`` sequences
+        # inside the canonical block (which embeds a Codex-supplied reason --
+        # e.g. a Windows path like ``C:\Users\name``) cannot be reinterpreted
+        # by ``re.sub`` as replacement escapes. A callable replacement bypasses
+        # the entire template-substitution layer.
+        replacement = canonical + "\n"
+        return heading_re.sub(lambda _m: replacement, text, count=1)
+
+    # No Worker Model section -- inject after Goal, or before Task, or prepend.
+    goal_re = _re.compile(
+        r"(^##\s+Goal\s*\n.*?)(?=^##\s+|\Z)",
+        _re.MULTILINE | _re.DOTALL,
+    )
+    m = goal_re.search(text)
+    if m:
+        end = m.end()
+        return text[:end] + "\n" + canonical + "\n" + text[end:]
+
+    task_re = _re.compile(r"^##\s+Task\b", _re.MULTILINE)
+    m = task_re.search(text)
+    if m:
+        start = m.start()
+        return text[:start] + canonical + "\n" + text[start:]
+
+    # Last resort -- prepend so the worker still sees it.
+    prefix = canonical + "\n"
+    return prefix + text if text else prefix
 
 
 def _compact_round_artifacts(rd: _Path, *, keep_diff: bool) -> list[str]:
@@ -444,7 +541,8 @@ Keep Required Reading to <= 4 paths. Out of Scope must cover unrelated top-level
     rd.mkdir(parents=True, exist_ok=True)
     round_plan_path = rd / "round-plan.json"
     round_plan_path.write_text(_json.dumps(round_plan, indent=2) + "\n", encoding="utf-8")
-    (rd / "claude-prompt.md").write_text(res.final_text, encoding="utf-8")
+    prompt_body = _ensure_worker_model_section(res.final_text, round_plan)
+    (rd / "claude-prompt.md").write_text(prompt_body, encoding="utf-8")
     rs.start_round(n=next_n, started_at=_dt.datetime.utcnow().isoformat())
     rs.save(run_dir / "state.json")
     _emit({
@@ -453,6 +551,7 @@ Keep Required Reading to <= 4 paths. Out of Scope must cover unrelated top-level
         "round_plan_path": str(round_plan_path),
         "worker_model": round_plan["worker_model"],
         "worker_model_reason": round_plan["worker_model_reason"],
+        "scope": round_plan["scope"],
         "summary": f"round {next_n} prompt drafted",
     })
     return 0
@@ -799,6 +898,61 @@ def _cmd_abort(args) -> int:
     return 0
 
 
+def _parse_lines_spec(spec: str, total: int) -> tuple[int, int]:
+    """Parse an ``--lines`` argument into an inclusive 1-indexed (start, end).
+
+    Accepted forms:
+      - ``N``    -> first N lines           -> (1, N)
+      - ``N-``   -> from line N to the end  -> (N, total)
+      - ``A-B``  -> A through B inclusive   -> (A, B)
+
+    ``total`` is the number of lines available so ``N-`` and out-of-range
+    requests clamp gracefully instead of silently emitting nothing. Raises
+    ``ValueError`` with a human-readable message on malformed input.
+    """
+    raw = (spec or "").strip()
+    if not raw:
+        raise ValueError("--lines must not be empty")
+    if "-" in raw:
+        left, _, right = raw.partition("-")
+        left = left.strip()
+        right = right.strip()
+        if not left:
+            raise ValueError(
+                f"--lines {spec!r}: missing start. Use 'N', 'N-', or 'A-B'."
+            )
+        try:
+            a = int(left)
+        except ValueError as e:
+            raise ValueError(
+                f"--lines {spec!r}: start is not an integer. Use 'N', 'N-', or 'A-B'."
+            ) from e
+        if right == "":
+            b = total
+        else:
+            try:
+                b = int(right)
+            except ValueError as e:
+                raise ValueError(
+                    f"--lines {spec!r}: end is not an integer. Use 'N', 'N-', or 'A-B'."
+                ) from e
+    else:
+        try:
+            n = int(raw)
+        except ValueError as e:
+            raise ValueError(
+                f"--lines {spec!r}: not an integer. Use 'N', 'N-', or 'A-B'."
+            ) from e
+        a, b = 1, n
+    if a < 1:
+        a = 1
+    if b < a:
+        raise ValueError(
+            f"--lines {spec!r}: end ({b}) is before start ({a})."
+        )
+    return a, b
+
+
 @register("inspect")
 def _cmd_inspect(args) -> int:
     repo = _Path(args.repo).resolve()
@@ -813,8 +967,12 @@ def _cmd_inspect(args) -> int:
         return 1
     text = target.read_text(encoding="utf-8")
     if args.lines:
-        a, b = (int(x) for x in args.lines.split("-"))
         lines = text.splitlines()
+        try:
+            a, b = _parse_lines_spec(args.lines, total=len(lines))
+        except ValueError as e:
+            _emit({"error": str(e)})
+            return 1
         text = "\n".join(lines[a - 1:b])
     if args.path:
         # naive filter for diff.patch: only emit chunks mentioning the path
