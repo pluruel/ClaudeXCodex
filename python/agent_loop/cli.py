@@ -416,8 +416,8 @@ def _render_worker_model_block(round_plan: dict, allowed_efforts: list[str] | No
     that build the dict without going through ``_parse_round_plan`` cannot
     inject extra markdown headings via newlines. ``reasoning_effort`` is
     constrained to config-derived allowed_efforts before rendering for the same
-    reason; an unrecognized value collapses to ``medium`` (which must be in
-    allowed_efforts by config validation).
+    reason; an unrecognized value uses the first allowed effort, or ``medium``
+    if it is in the allowed set, ensuring compatibility with custom configs.
 
     Args:
         round_plan: The normalized round plan dict with routing and effort values.
@@ -431,7 +431,8 @@ def _render_worker_model_block(round_plan: dict, allowed_efforts: list[str] | No
     scope = round_plan.get("scope", "normal")
     effort = round_plan.get("reasoning_effort", "medium")
     if not isinstance(effort, str) or effort not in allowed_efforts:
-        effort = "medium"
+        # Fallback: prefer "medium" if allowed, otherwise use first allowed effort.
+        effort = "medium" if "medium" in allowed_efforts else (allowed_efforts[0] if allowed_efforts else "medium")
     return (
         "## Worker Model\n"
         f"{model} - {reason}\n"

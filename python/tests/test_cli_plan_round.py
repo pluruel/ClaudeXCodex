@@ -520,3 +520,36 @@ def test_plan_round_respects_custom_allowed_efforts(tmp_repo: Path) -> None:
     effort_lines = [l for l in lines if "Reasoning Effort:" in l]
     assert len(effort_lines) == 1
     assert "low" in effort_lines[0] and "medium" not in effort_lines[0]
+
+
+def test_render_worker_model_block_invalid_effort_uses_configured_fallback() -> None:
+    """Direct test of _render_worker_model_block with invalid reasoning_effort.
+
+    When allowed_efforts excludes 'medium' and an invalid reasoning_effort is
+    provided, the fallback must use an allowed value, not hardcoded 'medium'.
+    This ensures custom [worker_reasoning].allowed configurations are respected."""
+    from agent_loop.cli import _render_worker_model_block
+
+    # Test case 1: allowed=["low", "high"], invalid effort -> should use "low"
+    round_plan = {
+        "worker_model": "haiku",
+        "worker_model_reason": "test reason",
+        "scope": "narrow",
+        "reasoning_effort": "medium",  # Invalid under this allowed list
+    }
+    block = _render_worker_model_block(round_plan, allowed_efforts=["low", "high"])
+    assert "## Worker Model" in block
+    assert "Reasoning Effort: low" in block
+    assert "medium" not in block
+
+    # Test case 2: allowed=["high"], invalid effort -> should use "high"
+    block = _render_worker_model_block(round_plan, allowed_efforts=["high"])
+    assert "Reasoning Effort: high" in block
+    assert "medium" not in block
+    assert "low" not in block
+
+    # Test case 3: allowed=["low", "medium", "high"], invalid effort -> should use "medium"
+    round_plan_extreme = dict(round_plan)
+    round_plan_extreme["reasoning_effort"] = "extreme"
+    block = _render_worker_model_block(round_plan_extreme, allowed_efforts=["low", "medium", "high"])
+    assert "Reasoning Effort: medium" in block
