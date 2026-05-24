@@ -80,7 +80,7 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--run", required=True)
     p.add_argument("--round", type=int, required=True)
     p.add_argument("--decision", required=True,
-                   choices=["APPROVE", "NEEDS_CHANGES", "STOP_FOR_USER"])
+                   choices=["APPROVE", "NEEDS_CHANGES", "PHASE_COMPLETE"])
     p.add_argument("--review-file", required=True)
 
     # append-memo
@@ -132,6 +132,11 @@ def build_parser() -> argparse.ArgumentParser:
     p = sub.add_parser("continue", help="resume an interrupted run")
     _add_common(p)
     p.add_argument("--run", default=None)
+
+    # advance-phase
+    p = sub.add_parser("advance-phase", help="transition to next phase and update phase doc")
+    _add_common(p)
+    p.add_argument("--run", required=True)
 
     return parser
 
@@ -529,6 +534,108 @@ def _parse_round_plan(raw: str, *, round_n: int, allowed_models: list[str],
 
 
 
+def _single_phase_fallback() -> list[dict]:
+    return [{
+        "phase_n": 1,
+        "title": "Implementation",
+        "objective": "Complete the goal.",
+        "content": "# Phase 1: Implementation\n\n## Objective\nComplete the goal.\n",
+    }]
+
+
+def _parse_phases_response(raw: str) -> list[dict]:
+    """Parse Codex phase-generation output into normalized phase dicts.
+
+    Returns list of dicts with keys: phase_n, title, objective, content.
+    Falls back to a single generic phase on any parse error.
+    """
+    import re as _re
+
+    text = raw.strip()
+    if text.startswith("```"):
+        text = _re.sub(r"^```(?:json)?\s*", "", text)
+        text = _re.sub(r"\s*```$", "", text).strip()
+    try:
+        data = _json.loads(text)
+    except _json.JSONDecodeError:
+        data = {}
+    if not isinstance(data, dict):
+        data = {}
+
+    raw_phases = data.get("phases")
+    if not isinstance(raw_phases, list) or not raw_phases:
+        return _single_phase_fallback()
+
+    result = []
+    for i, ph in enumerate(raw_phases, start=1):
+        if not isinstance(ph, dict):
+            continue
+        try:
+            n = int(ph.get("phase_n", i))
+        except (TypeError, ValueError):
+            n = i
+        title = str(ph.get("title", f"Phase {n}")).strip()
+        objective = str(ph.get("objective", "")).strip()
+        content = str(ph.get("content", "")).strip()
+        if not content:
+            content = f"# Phase {n}: {title}\n\n## Objective\n{objective}\n"
+        result.append({
+            "phase_n": n,
+            "title": title,
+            "objective": objective,
+            "content": content + "\n" if not content.endswith("\n") else content,
+        })
+
+    if not result:
+        return _single_phase_fallback()
+
+    # --- Normalization pass ---
+    # 1. Sort by original phase_n for stable ordering
+    result.sort(key=lambda ph: ph["phase_n"])
+    # 2. Cap to max 5 phases
+    result = result[:5]
+    # 3. Re-number contiguously from 1 and fix content headings
+    import re as _re2
+    for new_n, ph in enumerate(result, start=1):
+        old_n = ph["phase_n"]
+        ph["phase_n"] = new_n
+        # Update heading if it matches the old phase number
+        ph["content"] = _re2.sub(
+            rf"^(# Phase ){old_n}([:.])",
+            rf"\g<1>{new_n}\2",
+            ph["content"],
+            count=1,
+        )
+
+    return result
+
+
+def _load_current_phase_section(run_dir: "_Path", current_phase: int) -> str:
+    """Load current phase doc and return a formatted prompt section, or empty string.
+
+    Returns empty string when phases.json is absent (single-phase / legacy run)
+    or when the phase doc file is missing -- so callers need no special-casing.
+    """
+    phases_json_path = run_dir / "phases.json"
+    if not phases_json_path.exists():
+        return ""
+    try:
+        phases = _json.loads(phases_json_path.read_text(encoding="utf-8"))
+    except (_json.JSONDecodeError, OSError):
+        return ""
+    if not isinstance(phases, list):
+        return ""
+    entry = next((p for p in phases if isinstance(p, dict) and p.get("phase_n") == current_phase), None)
+    if entry is None:
+        return ""
+    doc_path = run_dir / entry.get("doc_path", f"phases/phase-{current_phase:02d}.md")
+    if not doc_path.exists():
+        return ""
+    content = doc_path.read_text(encoding="utf-8").strip()
+    title = entry.get("title", f"Phase {current_phase}")
+    return f'\n## Current Phase (Phase {current_phase}: "{title}")\n{content}\n'
+
+
 def _render_subtasks_block(subtasks: list[dict]) -> str:
     """Render a human-readable ### Subtasks (this round) markdown block.
 
@@ -658,7 +765,9 @@ def _cmd_plan_init(args) -> int:
     repo = _Path(args.repo).resolve()
     run_dir = _run_dir(repo, args.run)
     goal = (run_dir / "goal.md").read_text(encoding="utf-8").strip()
-    meta_prompt = (
+
+    # First Codex call: draft plan.md (existing behavior).
+    plan_prompt = (
         "You are drafting the initial implementation plan for the following goal. "
         "Output ONLY a markdown document with two sections:\n\n"
         "# Plan\n\n## Tasks\n1. [ ] <first concrete task>\n2. [ ] ...\n\n"
@@ -667,13 +776,70 @@ def _cmd_plan_init(args) -> int:
         f"## Goal\n{goal}\n"
     )
     try:
-        res = call_codex(meta_prompt)
+        plan_res = call_codex(plan_prompt)
     except CodexCallError as e:
         print(f"codex error: {e}", file=sys.stderr)
         return 1
     plan_path = run_dir / "plan.md"
-    plan_path.write_text(res.final_text, encoding="utf-8")
-    _emit({"plan_path": str(plan_path), "summary": "plan drafted"})
+    plan_path.write_text(plan_res.final_text, encoding="utf-8")
+
+    # Second Codex call: generate phase docs.
+    phases_prompt = (
+        "You are generating a phased implementation plan for a software development goal.\n\n"
+        "Analyze the goal complexity and decide how many phases (1-5):\n"
+        "- 1 phase: simple goal, achievable in 3-7 rounds total\n"
+        "- 2-3 phases: moderate complexity with distinct milestones\n"
+        "- 4-5 phases: large goal with multiple independent subsystems\n\n"
+        'Output ONLY JSON (no prose, no fenced block):\n'
+        '{\n'
+        '  "phases": [\n'
+        '    {\n'
+        '      "phase_n": 1,\n'
+        '      "title": "<short phase title>",\n'
+        '      "objective": "<one sentence: what this phase achieves>",\n'
+        '      "content": "<full markdown for this phase doc -- include: objective, key context, constraints, expected completion criteria, anticipated files/areas. Under 400 words.>"\n'
+        '    }\n'
+        '  ]\n'
+        '}\n\n'
+        f"## Goal\n{goal}\n\n"
+        f"## Plan (tasks overview)\n{plan_res.final_text}\n"
+    )
+    try:
+        phases_res = call_codex(phases_prompt)
+    except CodexCallError as e:
+        print(f"codex error: {e}", file=sys.stderr)
+        return 1
+
+    phases = _parse_phases_response(phases_res.final_text)
+
+    # Write phase docs and index.
+    phases_dir = run_dir / "phases"
+    phases_dir.mkdir(exist_ok=True)
+    phases_index = []
+    for ph in phases:
+        doc_path = phases_dir / f"phase-{ph['phase_n']:02d}.md"
+        doc_path.write_text(ph["content"], encoding="utf-8")
+        phases_index.append({
+            "phase_n": ph["phase_n"],
+            "title": ph["title"],
+            "objective": ph["objective"],
+            "doc_path": f"phases/phase-{ph['phase_n']:02d}.md",
+        })
+    (run_dir / "phases.json").write_text(
+        _json.dumps(phases_index, indent=2) + "\n", encoding="utf-8",
+    )
+
+    # Update state with phase counts.
+    rs = RunState.load(run_dir / "state.json")
+    rs.total_phases = len(phases)
+    rs.current_phase = 1
+    rs.save(run_dir / "state.json")
+
+    _emit({
+        "plan_path": str(plan_path),
+        "phases": phases_index,
+        "summary": f"{len(phases)} phase(s) drafted",
+    })
     return 0
 
 
@@ -716,6 +882,7 @@ def _cmd_plan_round(args) -> int:
     memo_path = run_dir / "memo.md"
     memo_full = memo_path.read_text(encoding="utf-8") if memo_path.exists() else ""
     memo_bounded = _bounded_memo(memo_full, max_rounds=3)
+    current_phase_section = _load_current_phase_section(run_dir, rs.current_phase)
 
     prev_round = next_n - 1
     last_payload = ""
@@ -802,7 +969,7 @@ Commit decision rules:
 
 ## Goal
 {goal}
-
+{current_phase_section}
 ## Plan
 {plan}
 
@@ -1029,6 +1196,10 @@ def _cmd_review_round(args) -> int:
         sensitive_path_patterns=safety_cfg_data.get("safety", {}).get("sensitive_paths", {}).get("patterns", []),
     )
 
+    # Load state early so we can inject the current phase doc into the review prompt.
+    rs = RunState.load(run_dir / "state.json")
+    current_phase_section = _load_current_phase_section(run_dir, rs.current_phase)
+
     diff_path = rd / "diff.patch"
     if not diff_path.exists():
         diff_path.write_text("", encoding="utf-8")
@@ -1092,7 +1263,7 @@ Output a markdown review body following this schema EXACTLY:
 # Codex Review -- Round {args.round}
 
 ## Decision
-APPROVE | NEEDS_CHANGES | STOP_FOR_USER
+APPROVE | NEEDS_CHANGES | PHASE_COMPLETE
 
 ## Goal Alignment
 <1-2 sentences>
@@ -1113,9 +1284,11 @@ APPROVE | NEEDS_CHANGES | STOP_FOR_USER
 <optional>
 
 Decision rules:
-- STOP_FOR_USER if safety_flags non-empty, OR result.requires_user true, OR you see ambiguity needing human judgement.
-- APPROVE if goal satisfied this round + tests pass + no flags.
+- PHASE_COMPLETE when this phase's objective (from the Current Phase section) is fully achieved and the codebase is ready for the next phase.
+- APPROVE if the entire run goal is achieved (all phases complete or goal fully satisfied).
 - NEEDS_CHANGES otherwise (default).
+
+Note: safety_flags in the payload are informational context. Use them to inform your decision freely — they do not force any particular outcome.
 
 ## Payload For This Round
 {_json.dumps(payload, indent=2)}
@@ -1125,7 +1298,7 @@ Decision rules:
 
 ## Claude's Result Report
 {result_md}
-
+{current_phase_section}
 ## Plan Deviations
 {chr(10).join("- " + item for item in result.plan_deviations) if result.plan_deviations else "(none reported)"}
 """
@@ -1138,14 +1311,18 @@ Decision rules:
     (rd / "codex-review.md").write_text(res.final_text, encoding="utf-8")
 
     m = re.search(
-        r"##\s+Decision\s*\n\s*(APPROVE|NEEDS_CHANGES|STOP_FOR_USER)\s*",
+        r"##\s+Decision\s*\n\s*(APPROVE|NEEDS_CHANGES|PHASE_COMPLETE)\s*",
         res.final_text, re.IGNORECASE,
     )
-    decision = m.group(1).upper() if m else "STOP_FOR_USER"
+    decision = m.group(1).upper() if m else "NEEDS_CHANGES"
 
+    # Reload to pick up any external mutation while the Codex call was in flight,
+    # then mutate and persist.
     rs = RunState.load(run_dir / "state.json")
     rs.set_round_decision(args.round, decision)
     rs.set_round_phase(args.round, "reviewed")
+    if decision == "PHASE_COMPLETE":
+        rs.phase_advance_pending = True
     rs.save(run_dir / "state.json")
 
     memo_fields = _parse_review_fields(res.final_text)
@@ -1164,11 +1341,12 @@ Decision rules:
     rs.save(run_dir / "state.json")
 
     artifacts_removed: list[str] = []
-    if artifact_mode == "compact" and decision != "STOP_FOR_USER" and not safety_flags:
+    if artifact_mode == "compact" and not safety_flags:
         artifacts_removed = _compact_round_artifacts(rd, keep_diff=False)
 
     _emit({
         "decision": decision,
+        "current_phase": rs.current_phase,
         "review_path": str(rd / "codex-review.md"),
         "round": args.round,
         "safety_flags": safety_flags,
@@ -1176,6 +1354,103 @@ Decision rules:
         "memo_path": str(memo_path),
         "artifact_mode": artifact_mode,
         "artifacts_removed": artifacts_removed,
+    })
+    return 0
+
+
+@register("advance-phase")
+def _cmd_advance_phase(args) -> int:
+    from agent_loop.codex_client import call_codex, CodexCallError
+    repo = _Path(args.repo).resolve()
+    run_dir = _run_dir(repo, args.run)
+    rs = RunState.load(run_dir / "state.json")
+    current_phase = rs.current_phase
+
+    # If already on the last phase, emit sentinel without invoking Codex.
+    if current_phase >= rs.total_phases:
+        rs.phase_advance_pending = False
+        rs.save(run_dir / "state.json")
+        _emit({
+            "previous_phase": current_phase,
+            "current_phase": current_phase,
+            "is_last_phase": True,
+        })
+        return 0
+
+    # Load phases index.
+    phases_json_path = run_dir / "phases.json"
+    if not phases_json_path.exists():
+        print("phases.json not found", file=sys.stderr)
+        return 1
+    try:
+        phases = _json.loads(phases_json_path.read_text(encoding="utf-8"))
+    except _json.JSONDecodeError as e:
+        print(f"phases.json parse error: {e}", file=sys.stderr)
+        return 1
+    if not isinstance(phases, list):
+        print("phases.json must be a JSON array", file=sys.stderr)
+        return 1
+
+    next_phase_n = current_phase + 1
+    next_entry = next(
+        (p for p in phases if isinstance(p, dict) and p.get("phase_n") == next_phase_n),
+        None,
+    )
+    if next_entry is None:
+        print(f"no phases.json entry for phase {next_phase_n}", file=sys.stderr)
+        return 1
+
+    # Gather update context.
+    def _read_safe(path: _Path, cap: int = 0) -> str:
+        if not path.exists():
+            return "(none)"
+        text = path.read_text(encoding="utf-8").strip()
+        if cap and len(text) > cap:
+            return text[:cap]
+        return text
+
+    knowledge = _read_safe(run_dir / "shared" / "knowledge.md")
+    decisions = _read_safe(run_dir / "shared" / "decisions.md")
+    last_review = "(none)"
+    if rs.rounds:
+        last_review = _read_safe(
+            run_dir / "rounds" / f"{rs.rounds[-1].n:02d}" / "codex-review.md",
+            cap=1500,
+        )
+
+    doc_path = run_dir / next_entry.get(
+        "doc_path", f"phases/phase-{next_phase_n:02d}.md",
+    )
+    original_doc = _read_safe(doc_path)
+
+    update_prompt = (
+        f"You are updating the strategic context document for Phase {next_phase_n} "
+        "of an ongoing implementation.\n\n"
+        "The previous phase is complete. Update the phase document to reflect what "
+        "was actually accomplished and what this next phase should focus on.\n\n"
+        "Output ONLY the updated markdown content (no JSON, no explanation, just the "
+        "markdown document).\n\n"
+        f"## Phase {next_phase_n} Original Document\n{original_doc}\n\n"
+        f"## Accumulated Knowledge\n{knowledge}\n\n"
+        f"## Accumulated Decisions\n{decisions}\n\n"
+        f"## Last Codex Review\n{last_review}\n"
+    )
+    try:
+        res = call_codex(update_prompt)
+    except CodexCallError as e:
+        print(f"codex error: {e}", file=sys.stderr)
+        return 1
+
+    doc_path.write_text(res.final_text.strip() + "\n", encoding="utf-8")
+
+    rs.advance_current_phase()
+    rs.save(run_dir / "state.json")
+
+    _emit({
+        "previous_phase": current_phase,
+        "current_phase": rs.current_phase,
+        "updated_doc": str(doc_path.relative_to(repo)),
+        "is_last_phase": False,
     })
     return 0
 

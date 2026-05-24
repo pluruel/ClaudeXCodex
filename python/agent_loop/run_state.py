@@ -34,7 +34,7 @@ def next_phase(current: Phase) -> Phase:
     return PHASES[idx + 1]
 
 
-Decision = Literal["APPROVE", "NEEDS_CHANGES", "STOP_FOR_USER"]
+Decision = Literal["APPROVE", "NEEDS_CHANGES", "PHASE_COMPLETE"]
 
 
 @dataclass
@@ -53,6 +53,9 @@ class RunState:
     goal_path: str
     plan_path: str
     current_round: int = 0
+    current_phase: int = 1
+    total_phases: int = 1
+    phase_advance_pending: bool = False
     status: Literal["in_progress", "completed", "aborted"] = "in_progress"
     rounds: list[RoundEntry] = field(default_factory=list)
     safety_flags: list[str] = field(default_factory=list)
@@ -66,6 +69,9 @@ class RunState:
     def load(cls, path: Path) -> "RunState":
         raw = json.loads(path.read_text(encoding="utf-8"))
         rounds = [RoundEntry(**r) for r in raw.pop("rounds", [])]
+        raw.setdefault("current_phase", 1)
+        raw.setdefault("total_phases", 1)
+        raw.setdefault("phase_advance_pending", False)
         return cls(rounds=rounds, **raw)
 
     def save(self, path: Path) -> None:
@@ -95,3 +101,8 @@ class RunState:
 
     def touch_heartbeat(self, ts: str) -> None:
         self.last_heartbeat = ts
+
+    def advance_current_phase(self) -> None:
+        """Increment current_phase (capped at total_phases) and clear pending flag."""
+        self.current_phase = min(self.current_phase + 1, self.total_phases)
+        self.phase_advance_pending = False

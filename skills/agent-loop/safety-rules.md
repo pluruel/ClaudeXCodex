@@ -25,10 +25,11 @@ Safety is enforced in two places:
 
 | Decision (from review-round JSON) | What to do |
 |---|---|
-| Any `safety_flags` non-empty | Treat as STOP_FOR_USER even if `decision == APPROVE` (defense in depth). |
-| `STOP_FOR_USER` | Tell user, point at codex-review.md, end loop. |
-| `APPROVE` (no flags) | Call `"${CLAUDE_PLUGIN_ROOT}/bin/agent-loop" finalize`. |
-| `NEEDS_CHANGES` (no flags) | Next round. |
+| `APPROVE` | Call `"${CLAUDE_PLUGIN_ROOT}/bin/agent-loop" finalize`. |
+| `PHASE_COMPLETE` | Call `"${CLAUDE_PLUGIN_ROOT}/bin/agent-loop" advance-phase`. If `is_last_phase` true, then finalize. |
+| `NEEDS_CHANGES` | Next round. |
+
+`safety_flags` (if any) are passed to Codex in the review payload as informational context. Codex decides the outcome autonomously based on this context — the supervisor does not override the decision based on flags.
 
 ## What you (supervisor) must never do
 

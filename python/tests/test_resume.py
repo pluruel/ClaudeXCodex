@@ -61,3 +61,16 @@ def test_resume_action_from_reviewed(tmp_path: Path) -> None:
     rs.set_round_phase(1, "reviewed")
     plan = determine_resume_action(rs, run_dir=tmp_path)
     assert plan.action == "write_memo"
+
+
+def test_determine_resume_action_advance_phase_when_pending(tmp_path: Path) -> None:
+    """phase_advance_pending=True must return advance_phase, even when last round is completed."""
+    rs = RunState.new(run_id="r", goal_path="g", plan_path="p")
+    rs.total_phases = 2
+    rs.current_phase = 1
+    rs.phase_advance_pending = True
+    rs.start_round(n=1, started_at="t0")
+    rs.set_round_phase(1, "completed")
+    rs.set_round_decision(1, "PHASE_COMPLETE")
+    plan = determine_resume_action(rs, run_dir=tmp_path)
+    assert plan.action == "advance_phase"

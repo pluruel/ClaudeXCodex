@@ -14,6 +14,7 @@ Action = Literal[
     "write_review",
     "write_memo",
     "branch_decision",
+    "advance_phase",
     "user_confirm",
     "finalize",
 ]
@@ -45,6 +46,11 @@ def find_active_run(repo: Path) -> Optional[Path]:
 
 
 def determine_resume_action(rs: RunState, *, run_dir: Path) -> ResumePlan:
+    if rs.phase_advance_pending:
+        return ResumePlan(
+            action="advance_phase",
+            notes="PHASE_COMPLETE received; advance-phase has not yet run",
+        )
     if not rs.rounds:
         return ResumePlan(action="plan_round", notes="no rounds started yet")
     last = rs.rounds[-1]

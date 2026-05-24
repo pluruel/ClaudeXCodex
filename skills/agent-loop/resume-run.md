@@ -24,7 +24,8 @@ Output JSON: `{action, notes, options, run_id, current_round}`.
 | `advance_to_review` | Worker finished but no review yet. Jump straight to `"${CLAUDE_PLUGIN_ROOT}/bin/agent-loop" review-round` (which also auto-appends the memo). |
 | `write_review` | Same as `advance_to_review`. |
 | `write_memo` | `review-round` was interrupted after writing `codex-review.md` but before appending the memo. Re-run `review-round`; the memo append is idempotent. Do NOT call `append-memo` manually. |
-| `branch_decision` | Review and memo are done, just branch (APPROVE / STOP_FOR_USER / NEEDS_CHANGES). |
+| `branch_decision` | Review and memo are done, just branch (APPROVE / PHASE_COMPLETE / NEEDS_CHANGES). |
+| `advance_phase` | Call `"${CLAUDE_PLUGIN_ROOT}/bin/agent-loop" advance-phase --run <run_id>`. If `is_last_phase` true, finalize. Otherwise loop back to round-loop step 1. |
 | `finalize` | Call `"${CLAUDE_PLUGIN_ROOT}/bin/agent-loop" finalize`. |
 | `user_confirm` | Show options to the user; act on their choice. |
 

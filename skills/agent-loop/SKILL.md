@@ -130,10 +130,10 @@ unchanged from the original SKILL.md.
 1. `Bash: "${CLAUDE_PLUGIN_ROOT}/bin/agent-loop" init-run --goal "<goal>" --slug "<short-slug>"`
    → JSON `{run_id, run_dir}`. Remember `run_id`.
 2. `Bash: "${CLAUDE_PLUGIN_ROOT}/bin/agent-loop" plan-init --run <run_id>`
-   → JSON `{plan_path, summary}`. (Codex drafted plan.md on disk.)
+   → JSON `{plan_path, phases, summary}`. (Codex drafted plan.md and phase docs on disk.)
 3. Enter round loop (next section).
 
-## Round loop (repeat until APPROVE / STOP_FOR_USER)
+## Round loop (repeat until APPROVE / PHASE_COMPLETE)
 
 For each round N (starting at 1):
 
@@ -367,12 +367,17 @@ For each round N (starting at 1):
    ```
 
 6. After Task tool returns, run: `Bash: "${CLAUDE_PLUGIN_ROOT}/bin/agent-loop" review-round --run <run_id> --round N`
-   → JSON `{decision, review_path, safety_flags, memo_appended, memo_path}`. Decision is one of APPROVE / NEEDS_CHANGES / STOP_FOR_USER. `review-round` automatically parses the Codex review and appends the round memo to `memo.md`; do not call `append-memo` yourself.
+   → JSON `{decision, current_phase, review_path, safety_flags, memo_appended, memo_path}`. Decision is one of APPROVE / NEEDS_CHANGES / PHASE_COMPLETE. `review-round` automatically parses the Codex review and appends the round memo to `memo.md`; do not call `append-memo` yourself.
 7. Branch on `decision`:
    - `APPROVE` →
      1. If `commit_on_approve` is `true` (from `plan-round` step 1 JSON): `Bash: git add -A && git commit -m "<commit_message>"`. Show the commit hash to the user.
      2. `Bash: "${CLAUDE_PLUGIN_ROOT}/bin/agent-loop" finalize --run <run_id>`. Tell the user the run completed; point them at `final-report.md`. END.
-   - `STOP_FOR_USER` → Tell the user the loop paused; show `safety_flags` and point at `codex-review.md` (for the human, not for you). END.
+   - `PHASE_COMPLETE` →
+     1. `Bash: "${CLAUDE_PLUGIN_ROOT}/bin/agent-loop" advance-phase --run <run_id>`
+        → JSON `{previous_phase, current_phase, updated_doc, is_last_phase}`.
+     2. If `is_last_phase` is `true`: call finalize (step above). END.
+     3. Announce: `Phase <previous_phase> complete -> advancing to Phase <current_phase>: "<title from phases.json>"`.
+     4. Loop back to step 1 (next round in new phase).
    - `NEEDS_CHANGES` → Loop back to step 1 (next round).
 
 ## On continue (`/ClaudeXCodex:agent-loop` or `/ClaudeXCodex:agent-loop continue`)
@@ -386,6 +391,7 @@ For each round N (starting at 1):
    - `write_review` → same as `advance_to_review`: run review-round (also re-composes memo if missing)
    - `write_memo` → review-round was interrupted before memo append. Re-run review-round; it will re-invoke Codex and re-append the memo idempotently.
    - `branch_decision` → review and memo are done; go straight to step 7 (decision branch)
+   - `advance_phase` → phase transition pending. Call `"${CLAUDE_PLUGIN_ROOT}/bin/agent-loop" advance-phase --run <run_id>`; if `is_last_phase` true, finalize; else loop back to round-loop step 1.
    - `finalize` → call finalize if the last completed round was approved
    - `user_confirm` → tell the user the options and wait
 
