@@ -393,8 +393,17 @@ For each round N (starting at 1):
          The supervisor reads state.json and review JSON for everything else.
    ```
 
-6. After Task tool returns, run: `Bash: "${CLAUDE_PLUGIN_ROOT}/bin/agent-loop" review-round --run <run_id> --round N`
-   → JSON `{decision, current_phase, review_path, safety_flags, severity_counts, carry_forward, memo_appended, memo_path}`. Decision is one of APPROVE / NEEDS_CHANGES / PHASE_COMPLETE. `review-round` automatically parses the Codex review and appends the round memo to `memo.md`; do not call `append-memo` yourself.
+6. **Check verification outcome before calling review-round.**
+   Check the CURRENT ROUND's `rounds/NN/progress.md` for any `[done] <id> verification: fail` line (where NN is the current round number).
+
+   - **Any verification FAIL found** → Do NOT call `review-round`. Read failure details from `shared/test-results.md` for context. Dispatch a fix worker (next round) by default. Escalate to user only for planning-level issues (not fixable by code changes).
+
+   - **All verification PASS, or no verification subtask** → Call:
+     `Bash: "${CLAUDE_PLUGIN_ROOT}/bin/agent-loop" review-round --run <run_id> --round N`
+     → JSON `{decision, current_phase, review_path, safety_flags, severity_counts, carry_forward, memo_appended, memo_path}`.
+     Decision is one of APPROVE / NEEDS_CHANGES / PHASE_COMPLETE.
+     `review-round` automatically parses the Codex review and appends the round memo to `memo.md`;
+     do not call `append-memo` yourself.
 7. Branch on `decision`:
    - `APPROVE` →
      1. If `commit_on_approve` is `true` (from `plan-round` step 1 JSON): `Bash: git add -A && git commit -m "<commit_message>"`. Show the commit hash to the user.
@@ -421,8 +430,8 @@ For each round N (starting at 1):
 2. Interpret `action`:
    - `plan_round` → start a fresh round at step 1 of the round loop
    - `dispatch` → re-announce the round (step 3), run `mark-dispatched` (step 4), then dispatch the worker (step 5)
-   - `advance_to_review` → worker result exists but review has not run; go straight to step 6 (`review-round`)
-   - `write_review` → same as `advance_to_review`: run review-round (also re-composes memo if missing)
+   - `advance_to_review` → worker result exists but review has not run; first check the current round's `rounds/NN/progress.md` for any `[done] <id> verification: fail` line — if found, treat as verification FAIL and dispatch a fix worker instead of calling review-round. Otherwise go to step 6 (`review-round`).
+   - `write_review` → same as `advance_to_review`: first check the current round's `rounds/NN/progress.md` for any `[done] <id> verification: fail` line — if found, treat as verification FAIL and dispatch a fix worker instead of calling review-round. Otherwise run review-round (also re-composes memo if missing).
    - `write_memo` → review-round was interrupted before memo append. Re-run review-round; it will re-invoke Codex and re-append the memo idempotently.
    - `branch_decision` → review and memo are done; go straight to step 7 (decision branch)
    - `advance_phase` → phase transition pending. Call `"${CLAUDE_PLUGIN_ROOT}/bin/agent-loop" advance-phase --run <run_id>`; if `is_last_phase` true, finalize; else loop back to round-loop step 1.
