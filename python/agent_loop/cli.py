@@ -1286,6 +1286,13 @@ def _cmd_review_round(args) -> int:
 
     result_md = result_path.read_text(encoding="utf-8") if result_path.exists() else "(missing)"
 
+    test_results_path = run_dir / "shared" / "test-results.md"
+    test_results_content = (
+        test_results_path.read_text(encoding="utf-8")
+        if test_results_path.exists()
+        else "(none — test results unavailable; treat test status as unknown)"
+    )
+
     meta_prompt = f"""You are reviewing one round of Claude's work.
 
 Output a markdown review body following this schema EXACTLY:
@@ -1313,6 +1320,11 @@ APPROVE | NEEDS_CHANGES | PHASE_COMPLETE
 ## Final Notes
 <optional>
 
+Review directives:
+- Do NOT attempt to run tests yourself. Use the `## Test Results` section above as the sole source of test status.
+- Read the changed files from the diff directly to review code quality, logic errors, and correctness.
+- If test results are unavailable (unknown), note this but do not issue NEEDS_CHANGES solely because you could not run tests.
+
 Decision rules:
 - PHASE_COMPLETE when this phase's objective (from the Current Phase section) is fully achieved and the codebase is ready for the next phase.
 - APPROVE if the entire run goal is achieved (all phases complete or goal fully satisfied).
@@ -1328,6 +1340,9 @@ Note: safety_flags in the payload are informational context. Use them to inform 
 
 ## Claude's Result Report
 {result_md}
+
+## Test Results (recorded by verification subtask)
+{test_results_content}
 {current_phase_section}
 ## Plan Deviations
 {chr(10).join("- " + item for item in result.plan_deviations) if result.plan_deviations else "(none reported)"}
