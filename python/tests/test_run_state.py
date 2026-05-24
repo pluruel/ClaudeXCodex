@@ -22,6 +22,7 @@ def test_phases_in_order() -> None:
         "reviewed",
         "memo_written",
         "completed",
+        "skipped",
     ]
 
 

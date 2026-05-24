@@ -14,6 +14,7 @@ Phase = Literal[
     "reviewed",
     "memo_written",
     "completed",
+    "skipped",
 ]
 
 PHASES: list[Phase] = [
@@ -24,6 +25,7 @@ PHASES: list[Phase] = [
     "reviewed",
     "memo_written",
     "completed",
+    "skipped",
 ]
 
 
@@ -45,6 +47,8 @@ class RoundEntry:
     memo_lines: Optional[str] = None
     started_at: Optional[str] = None
     ended_at: Optional[str] = None
+    skip_reason: Optional[str] = None
+    skip_commit_on_approve: Optional[bool] = None
 
 
 @dataclass
@@ -68,7 +72,11 @@ class RunState:
     @classmethod
     def load(cls, path: Path) -> "RunState":
         raw = json.loads(path.read_text(encoding="utf-8"))
-        rounds = [RoundEntry(**r) for r in raw.pop("rounds", [])]
+        round_raws = raw.pop("rounds", [])
+        for r in round_raws:
+            r.setdefault("skip_reason", None)
+            r.setdefault("skip_commit_on_approve", None)
+        rounds = [RoundEntry(**r) for r in round_raws]
         raw.setdefault("current_phase", 1)
         raw.setdefault("total_phases", 1)
         raw.setdefault("phase_advance_pending", False)

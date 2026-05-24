@@ -718,7 +718,11 @@ def test_review_round_surfaces_parse_failure_flag(tmp_repo: Path, codex_stub) ->
 
     # Verify parse_failed is set
     rp = run_dir / "rounds" / "01" / "round_plan.json"
-    assert json.loads(rp.read_text(encoding="utf-8")).get("parse_failed") is True
+    rp_data = json.loads(rp.read_text(encoding="utf-8"))
+    assert rp_data.get("parse_failed") is True
+    # Patch commit_on_approve so review-round gate is satisfied
+    rp_data["commit_on_approve"] = True
+    rp.write_text(json.dumps(rp_data), encoding="utf-8")
 
     _run(["mark-dispatched", "--run", run_id, "--round", "1"], cwd=tmp_repo)
     _run(["mark-worker-done", "--run", run_id, "--round", "1"], cwd=tmp_repo)

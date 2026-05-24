@@ -113,10 +113,10 @@ plan emitted.
 
 ## Context discipline (mandatory)
 
-- You never read full diffs, test logs, claude-prompt.md, or codex-review.md. Not even "one quick pass." The memo is auto-composed by `review-round`; you have no reason to open the review file.
+- You never read full diffs, test logs, claude-prompt.md, or codex-review.md. Not even "one quick pass." The memo is auto-composed by `review-round` (commit rounds) or `memo-note` (non-commit rounds); you have no reason to open the review file.
 - You only ingest the small JSON each CLI subcommand emits.
 - For details, you can run the CLI's `inspect` subcommand with narrow `--lines` to extract a slice — but only when JSON is genuinely insufficient (rare). `--lines` accepts `N` (first N), `N-` (from N onward), or `A-B` (range). Example: `agent-loop inspect --run <id> --round N --file codex-review.md --lines 80`.
-- You never call `codex exec` or `codex` directly — always via the CLI's `plan-init|plan-round|review-round` subcommands.
+- You never call `codex exec` or `codex` directly — always via the CLI's `plan-init|plan-round|review-round|memo-note` subcommands.
 
 ## On start with `--plan <file>`
 
@@ -345,12 +345,16 @@ For each round N (starting at 1):
    Run: `"${CLAUDE_PLUGIN_ROOT}/bin/agent-loop" record-diff --run <run_id> --round N --baseline <baseline>`
    Run: `"${CLAUDE_PLUGIN_ROOT}/bin/agent-loop" mark-worker-done --run <run_id> --round N`
 
-6. **Check verification outcome before calling review-round.**
+6. **Check verification outcome AND `commit_on_approve` before calling review-round.**
    Check the CURRENT ROUND's `rounds/NN/progress.md` for any `[done] <id> verification: fail` line (where NN is the current round number).
 
    - **Any verification FAIL found** → Do NOT call `review-round`. Read failure details from `shared/test-results.md` for context. Dispatch a fix worker (next round) by default. Escalate to user only for planning-level issues (not fixable by code changes).
 
-   - **All verification PASS, or no verification subtask** → Call:
+   - **All verification PASS (or no verification subtask), AND `commit_on_approve == false`** (from `plan-round` step 1 JSON) →
+     `Bash: "${CLAUDE_PLUGIN_ROOT}/bin/agent-loop" memo-note --run <run_id> --round N`
+     → JSON `{memo_appended, memo_path, round, phase}`. Phase is "skipped". Loop back to step 1 (next round). Do NOT call `review-round`.
+
+   - **All verification PASS (or no verification subtask), AND `commit_on_approve == true`** →
      `Bash: "${CLAUDE_PLUGIN_ROOT}/bin/agent-loop" review-round --run <run_id> --round N`
      → JSON `{decision, current_phase, review_path, safety_flags, severity_counts, carry_forward, memo_appended, memo_path}`.
      Decision is one of APPROVE / NEEDS_CHANGES / PHASE_COMPLETE.
@@ -395,9 +399,10 @@ For each round N (starting at 1):
 2. Interpret `action`:
    - `plan_round` → start a fresh round at step 1 of the round loop
    - `dispatch` → re-announce the round (step 3), run `mark-dispatched` (step 4), then dispatch the worker (step 5)
-   - `advance_to_review` → worker result exists but review has not run; first check the current round's `rounds/NN/progress.md` for any `[done] <id> verification: fail` line — if found, treat as verification FAIL and dispatch a fix worker instead of calling review-round. Otherwise go to step 6 (`review-round`).
-   - `write_review` → same as `advance_to_review`: first check the current round's `rounds/NN/progress.md` for any `[done] <id> verification: fail` line — if found, treat as verification FAIL and dispatch a fix worker instead of calling review-round. Otherwise run review-round (also re-composes memo if missing).
+   - `advance_to_review` → worker result exists but review has not run; first check the current round's `rounds/NN/progress.md` for any `[done] <id> verification: fail` line — if found, treat as verification FAIL and dispatch a fix worker instead of calling review-round. Then check `commit_on_approve` from `round_plan.json`: if false → call `memo-note`; if true → call `review-round`.
+   - `write_review` → same as `advance_to_review`: first check the current round's `rounds/NN/progress.md` for any `[done] <id> verification: fail` line — if found, treat as verification FAIL and dispatch a fix worker instead of calling review-round. Then check `commit_on_approve`: if false → call `memo-note`; if true → run review-round (also re-composes memo if missing).
    - `write_memo` → review-round was interrupted before memo append. Re-run review-round; it will re-invoke Codex and re-append the memo idempotently.
+   - `skip_review` → non-commit round; call `"${CLAUDE_PLUGIN_ROOT}/bin/agent-loop" memo-note --run <run_id> --round N`, then loop back to step 1 (next round).
    - `branch_decision` → review and memo are done; go straight to step 7 (decision branch)
    - `advance_phase` → phase transition pending. Call `"${CLAUDE_PLUGIN_ROOT}/bin/agent-loop" advance-phase --run <run_id>`; if `is_last_phase` true, finalize; else loop back to round-loop step 1.
    - `finalize` → call finalize if the last completed round was approved

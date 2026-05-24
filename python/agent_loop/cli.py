@@ -140,6 +140,12 @@ def build_parser() -> argparse.ArgumentParser:
     _add_common(p)
     p.add_argument("--run", required=True)
 
+    # memo-note
+    p = sub.add_parser("memo-note", help="write skip-review memo block and set phase to skipped")
+    _add_common(p)
+    p.add_argument("--run", required=True)
+    p.add_argument("--round", type=int, required=True)
+
     return parser
 
 
@@ -969,6 +975,22 @@ Output ONLY JSON with this schema:
   "carry_forward": "<bullet summary of what to carry from previous round, or empty string>"
 }}
 
+Execution plan quality rules (MANDATORY — violations cause worker failure):
+- Every bullet in execution_plan_bullets MUST name a specific file path (e.g. "python/agent_loop/cli.py:354", NOT "the CLI file").
+- Every bullet MUST state the exact change: function name, variable, line range, or the precise text to add/remove. "Update the function" is NOT acceptable.
+- A worker reading ONLY these bullets, with zero additional context, must be able to execute without inference or guesswork.
+- If reading code is needed before acting, add a dedicated analysis subtask (role=analysis) — do not embed assumptions in implementation bullets.
+
+Acceptance criteria quality rules (MANDATORY — vague criteria are rejected):
+- Every criterion in acceptance_criteria MUST be mechanically verifiable: a named test, a grep command, or a file-existence check.
+- NOT acceptable: "the feature works" or "code is clean".
+- ACCEPTABLE: "pytest python/tests/test_cli_review_gate.py::test_memo_note_sets_skipped_phase passes" or "grep -n 'skipped' python/agent_loop/run_state.py returns a line in the Phase Literal".
+- At least one criterion MUST be a runnable command with a specific expected output.
+
+Self-check before outputting (mandatory):
+- Could a worker with ZERO context complete every execution_plan_bullets step on the first try? If no → rewrite those bullets with specific file paths and line references.
+- Is every acceptance_criteria criterion binary (pass/fail with a named command)? If no → rewrite as a command with expected output.
+
 Model selection rules:
 - haiku: mechanical, 1-2 likely files, clear execution plan, clear tests, low risk.
 - sonnet: normal integration work, multiple files, pattern matching, moderate uncertainty.
@@ -1236,6 +1258,22 @@ def _cmd_review_round(args) -> int:
     repo = _Path(args.repo).resolve()
     run_dir = _run_dir(repo, args.run)
     rd = run_dir / "rounds" / f"{args.round:02d}"
+
+    # Hard-gate: refuse to run Codex review if this round is non-commit
+    _gate_path = rd / "round_plan.json"
+    if not _gate_path.exists():
+        _gate_path = rd / "round-plan.json"
+    if not _gate_path.exists():
+        print(f"review-round refused: no round plan found for round {args.round}; cannot confirm commit_on_approve", file=sys.stderr)
+        return 1
+    try:
+        _rp = _json.loads(_gate_path.read_text(encoding="utf-8"))
+    except (_json.JSONDecodeError, OSError):
+        print(f"review-round refused: could not read round plan for round {args.round}", file=sys.stderr)
+        return 1
+    if not _rp.get("commit_on_approve", False):
+        print(f"review-round skipped: round {args.round} has commit_on_approve=false; use memo-note instead", file=sys.stderr)
+        return 1
 
     cfg = _load_config(repo)
     artifact_mode = _artifact_mode(cfg)
@@ -1787,6 +1825,70 @@ def _cmd_continue(args) -> int:
         "options": plan.options,
         "run_id": rs.run_id,
         "current_round": rs.current_round,
+    })
+    return 0
+
+
+@register("memo-note")
+def _cmd_memo_note(args) -> int:
+    from agent_loop.diff_capture import compute_stats
+
+    repo = _Path(args.repo).resolve()
+    run_dir = _run_dir(repo, args.run)
+    rd = run_dir / "rounds" / f"{args.round:02d}"
+
+    # Safety check: refuse if commit_on_approve is true (or plan is missing/unreadable)
+    _gate_path = rd / "round_plan.json"
+    if not _gate_path.exists():
+        _gate_path = rd / "round-plan.json"
+    # If no readable plan found: fail closed
+    if not _gate_path.exists():
+        print(f"memo-note refused: no round_plan.json or round-plan.json found for round {args.round}; cannot determine commit_on_approve", file=sys.stderr)
+        return 1
+    try:
+        rp_data = _json.loads(_gate_path.read_text(encoding="utf-8"))
+    except (_json.JSONDecodeError, OSError):
+        print(f"memo-note refused: could not read round plan for round {args.round}", file=sys.stderr)
+        return 1
+    commit_on_approve = bool(rp_data.get("commit_on_approve", False))
+    if commit_on_approve:
+        print(f"memo-note refused: round {args.round} has commit_on_approve=true; use review-round instead", file=sys.stderr)
+        return 1
+
+    # Compute diff stats if diff.patch exists
+    diff_path = rd / "diff.patch"
+    diff_size_str = "(not computed)"
+    if diff_path.exists():
+        diff = diff_path.read_text(encoding="utf-8")
+        stats = compute_stats(diff)
+        diff_size_str = f"files={stats.files_changed}, +{stats.insertions}/-{stats.deletions}"
+
+    # Build memo block
+    memo_block = "\n".join([
+        f"## Round {args.round} - CONTINUE",
+        "- Goal progress: worker completed assigned subtasks (review skipped — non-commit round)",
+        "- Top risks: (none flagged)",
+        "- Carry forward: (none)",
+        f"- Diff size: {diff_size_str}",
+        "",
+    ])
+
+    memo_path = run_dir / "memo.md"
+    appended = _append_memo_idempotent(memo_path, args.round, memo_block)
+
+    rs = RunState.load(run_dir / "state.json")
+    rs.set_round_phase(args.round, "skipped")
+    entry = rs._round(args.round)
+    entry.ended_at = _dt.datetime.utcnow().isoformat()
+    entry.skip_reason = "commit_on_approve=false"
+    entry.skip_commit_on_approve = False
+    rs.save(run_dir / "state.json")
+
+    _emit({
+        "memo_appended": appended,
+        "memo_path": str(memo_path),
+        "round": args.round,
+        "phase": "skipped",
     })
     return 0
 

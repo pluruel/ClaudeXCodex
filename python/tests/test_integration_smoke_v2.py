@@ -59,6 +59,8 @@ def test_e2e_claude_entry_flow(tmp_repo: Path, codex_stub) -> None:
                 "worker_model_reason": "simple smoke task",
                 "reasoning_effort": "low",
                 "subtasks": [],
+                "commit_on_approve": True,
+                "commit_message": "feat: implement thing",
             },
             "task_description": "Implement thing",
             "execution_plan_bullets": [],

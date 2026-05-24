@@ -22,6 +22,7 @@ def test_review_round_emits_decision(tmp_repo: Path, codex_stub) -> None:
     run_id = json.loads(r1.stdout)["run_id"]
     rd = tmp_repo / ".agent-loop" / "runs" / run_id / "rounds" / "01"
     rd.mkdir(parents=True)
+    (rd / "round_plan.json").write_text(json.dumps({"commit_on_approve": True}), encoding="utf-8")
     (rd / "claude-prompt.md").write_text("hi", encoding="utf-8")
     (rd / "diff.patch").write_text("", encoding="utf-8")
 
@@ -78,6 +79,7 @@ def test_review_round_debug_mode_preserves_intermediate_artifacts(
     run_id = json.loads(r1.stdout)["run_id"]
     rd = tmp_repo / ".agent-loop" / "runs" / run_id / "rounds" / "01"
     rd.mkdir(parents=True)
+    (rd / "round_plan.json").write_text(json.dumps({"commit_on_approve": True}), encoding="utf-8")
     (rd / "diff.patch").write_text(
         "diff --git a/a.txt b/a.txt\n--- a/a.txt\n+++ b/a.txt\n@@ -0,0 +1 @@\n+hi\n",
         encoding="utf-8",
@@ -111,6 +113,7 @@ def test_review_round_emits_severity_and_carry_forward(tmp_repo: Path, codex_stu
     run_id = json.loads(r1.stdout)["run_id"]
     rd = tmp_repo / ".agent-loop" / "runs" / run_id / "rounds" / "01"
     rd.mkdir(parents=True)
+    (rd / "round_plan.json").write_text(json.dumps({"commit_on_approve": True}), encoding="utf-8")
     (rd / "claude-prompt.md").write_text("hi", encoding="utf-8")
     (rd / "diff.patch").write_text("", encoding="utf-8")
 
@@ -162,6 +165,9 @@ def test_review_round_rejects_invalid_artifact_mode(tmp_repo: Path) -> None:
     )
     r1 = _run(["init-run", "--goal", "g", "--slug", "s"], cwd=tmp_repo)
     run_id = json.loads(r1.stdout)["run_id"]
+    rd = tmp_repo / ".agent-loop" / "runs" / run_id / "rounds" / "01"
+    rd.mkdir(parents=True)
+    (rd / "round_plan.json").write_text(json.dumps({"commit_on_approve": True}), encoding="utf-8")
     r = _run(["review-round", "--run", run_id, "--round", "1"], cwd=tmp_repo)
     assert r.returncode != 0
     assert "invalid artifacts.mode" in r.stderr
