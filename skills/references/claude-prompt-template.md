@@ -43,13 +43,10 @@ The literal template for the Round N worker prompt. The Python core (`prompt_ren
 
 ## Forbidden Actions
 …
-
-## claude-result.md schema
-…
 ```
 
 The boilerplate sections are static and stable. Codex's job is to supply:
 `round_n`, `goal`, `task`, `execution_plan`, `acceptance_criteria`,
 `carry_forward`, and the reading lists. The worker is expected to execute the
 plan with local judgment and record any justified deviation in
-`claude-result.md`.
+`shared/open-questions.md`.

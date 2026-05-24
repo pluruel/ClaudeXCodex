@@ -43,7 +43,7 @@ This plugin ships schema docs at `${CLAUDE_PLUGIN_ROOT}/skills/references/` for 
 ## Artifact mode
 
 The default artifact mode is `compact`. After a clean review, the CLI keeps the
-durable files (`claude-prompt.md`, `claude-result.md`, `codex-review.md`, and
+durable files (`claude-prompt.md`, `codex-review.md`, and
 `review-payload.json`, plus the run-level state/memo/report files) and removes
 intermediate files such as `diff.patch`, `diff-stats.json`, and `progress.md`.
 
@@ -111,19 +111,11 @@ plan emitted.
 
 - Use `worker_model`, `worker_model_reason`, and `reasoning_effort` for the announce line (step 3 of round loop).
 
-### Single-worker fallback
-
-If `subtasks` is absent from the round plan JSON, is an empty list, or is structurally
-invalid (missing required fields), fall back to the legacy single-worker dispatch:
-dispatch one Task tool call with `claude-prompt.md` as its instructions, using the
-round-level `worker_model` and `reasoning_effort`. The fallback prompt format is
-unchanged from the original SKILL.md.
-
 ## Context discipline (mandatory)
 
-- You never read full diffs, test logs, claude-result.md, claude-prompt.md, or codex-review.md. Not even "one quick pass." The memo is auto-composed by `review-round`; you have no reason to open the review file.
+- You never read full diffs, test logs, claude-prompt.md, or codex-review.md. Not even "one quick pass." The memo is auto-composed by `review-round`; you have no reason to open the review file.
 - You only ingest the small JSON each CLI subcommand emits.
-- For details, you can run the CLI's `inspect` subcommand with narrow `--lines` to extract a slice — but only when JSON is genuinely insufficient (rare). `--lines` accepts `N` (first N), `N-` (from N onward), or `A-B` (range). Example: `agent-loop inspect --run <id> --round N --file claude-result.md --lines 80`.
+- For details, you can run the CLI's `inspect` subcommand with narrow `--lines` to extract a slice — but only when JSON is genuinely insufficient (rare). `--lines` accepts `N` (first N), `N-` (from N onward), or `A-B` (range). Example: `agent-loop inspect --run <id> --round N --file codex-review.md --lines 80`.
 - You never call `codex exec` or `codex` directly — always via the CLI's `plan-init|plan-round|review-round` subcommands.
 
 ## On start with `--plan <file>`
@@ -183,8 +175,7 @@ For each round N (starting at 1):
 
    Inspect the `subtasks` field from the `plan-round` JSON (step 1). If it is present,
    non-empty, and each entry has at minimum `id`, `role`, `model`, `reasoning_effort`,
-   and `deliverable`, proceed to **5b (subtask fan-out)**. Otherwise proceed
-   to **5c (single-worker fallback)**.
+   and `deliverable`, proceed to **5b (subtask fan-out)**.
 
    ### 5b — Subtask fan-out (default path)
 
@@ -236,7 +227,7 @@ For each round N (starting at 1):
        - You are an ANALYSIS subtask. You MUST NOT modify any source code, config,
          or docs. No Edit, no Write outside .agent-loop/runs/<run_id>/shared/ and
          .../rounds/NN/progress.md.
-       - Do NOT run record-diff, mark-worker-done, or write claude-result.md.
+       - Do NOT run record-diff or mark-worker-done.
 
        Reasoning effort: <subtask.reasoning_effort>
 
@@ -282,8 +273,6 @@ For each round N (starting at 1):
          and configs within the scope of your deliverable.
        - Do NOT run record-diff or mark-worker-done (the supervisor calls these
          once after all subtasks complete).
-       - Do NOT write claude-result.md (the supervisor's final implementation
-         subtask writes a consolidated result, or the supervisor writes it).
        - Append progress to .../rounds/NN/progress.md.
        - Append durable facts to .../shared/knowledge.md.
        - Append design decisions to .../shared/decisions.md.
@@ -356,43 +345,6 @@ For each round N (starting at 1):
    Run: `"${CLAUDE_PLUGIN_ROOT}/bin/agent-loop" record-diff --run <run_id> --round N --baseline <baseline>`
    Run: `"${CLAUDE_PLUGIN_ROOT}/bin/agent-loop" mark-worker-done --run <run_id> --round N`
 
-   ### 5c — Single-worker fallback (legacy path)
-
-   Triggered only when `subtasks` is missing, empty, or structurally invalid.
-   The subagent inherits `${CLAUDE_PLUGIN_ROOT}` from the supervisor. If the Task
-   tool accepts a per-call model override, set it to `<worker_model>`. Prompt:
-
-   ```
-   Task tool (general-purpose):
-     description: "Worker round N for <run_id>"
-     model: <worker_model>   # haiku | sonnet | opus — drop if host rejects per-call model
-     prompt: |
-       Reasoning Effort: <reasoning_effort>
-       Read .agent-loop/runs/<run_id>/rounds/NN/claude-prompt.md and implement
-       what it specifies. Strict rules:
-       - Follow the Required Reading list in that prompt. Do NOT read Out of Scope.
-       - Append a line to .agent-loop/runs/<run_id>/rounds/NN/progress.md
-         at each meaningful step ([done] / [doing] / [planned]).
-       - Append durable facts to .agent-loop/runs/<run_id>/shared/knowledge.md.
-       - Append design decisions to .agent-loop/runs/<run_id>/shared/decisions.md.
-       - Append open questions to .agent-loop/runs/<run_id>/shared/open-questions.md.
-       - At the end, write .agent-loop/runs/<run_id>/rounds/NN/claude-result.md
-         following the schema in your prompt.
-       - Treat the prompt's Execution Plan as the default path. If code reading
-         proves it wrong or incomplete, make the smallest justified deviation
-         and record it under Plan Deviations in claude-result.md.
-       - Run: `"${CLAUDE_PLUGIN_ROOT}/bin/agent-loop" record-diff --run <run_id> --round N --baseline <baseline>`
-       - Run: `"${CLAUDE_PLUGIN_ROOT}/bin/agent-loop" mark-worker-done --run <run_id> --round N`
-       - Forbidden: git commit, git push, rm -rf, sudo, db migrations,
-         writes to .env / secrets / migrations.
-       - Reply to the supervisor with EXACTLY ONE LINE:
-           OK
-         on success, or
-           FAIL: <one sentence>
-         on failure. Nothing else. No summary, no file list, no rationale.
-         The supervisor reads state.json and review JSON for everything else.
-   ```
-
 6. **Check verification outcome before calling review-round.**
    Check the CURRENT ROUND's `rounds/NN/progress.md` for any `[done] <id> verification: fail` line (where NN is the current round number).
 
@@ -415,13 +367,26 @@ For each round N (starting at 1):
      3. Announce: `Phase <previous_phase> complete -> advancing to Phase <current_phase>: "<title from phases.json>"`.
      4. Loop back to step 1 (next round in new phase).
    - `NEEDS_CHANGES` →
-     **Supervisor override check** (skip next round only if ALL hold):
+     **Step A — Automatic promote check** (treat as PHASE_COMPLETE if ALL hold):
      1. `safety_flags` is empty
      2. `severity_counts.high == 0`
      3. Every item in `carry_forward` contains only minor-signal words: "style", "nit", "minor", "optional", "cosmetic", "formatting"
 
      If all three hold → treat as PHASE_COMPLETE: call `advance-phase` (or `finalize` if last phase).
-     Otherwise → loop back to step 1 (next round).
+
+     **Step B — Supervisor judgment override** (when Step A does not apply):
+     The supervisor may override the reviewer's NEEDS_CHANGES decision and proceed as PHASE_COMPLETE when a defensible rationale exists: the phase objective is fully met, the flagged items are not blockers for forward progress (e.g., dead code, doc nits, environment-specific test failures unrelated to logic), and tests pass.
+
+     Before proceeding with a judgment override:
+     1. APPEND to `shared/knowledge.md` under heading `## Supervisor override — Round N NEEDS_CHANGES → PHASE_COMPLETE (<date>)` a prose rationale covering: (a) why the phase objective is met, (b) each reviewer flag with its severity, (c) why each flag is not a blocker, (d) supporting evidence (test counts, clean state, etc.).
+     2. Then call `advance-phase` (or `finalize` if last phase).
+
+     **Step C — User escalation** (when supervisor cannot make a defensible decision):
+     Escalate to the user — present continue / revise plan / abort choices — when EITHER:
+     - `consecutive_needs_changes >= 3` (the loop is not converging and needs human direction), OR
+     - The supervisor cannot construct a defensible rationale (e.g., `safety_flags` non-empty with plausible real risks, high-severity issues that may indicate a design problem, or reviewer flags whose validity the supervisor cannot assess).
+
+     Otherwise (Steps A and B both inapplicable, Step C not triggered) → loop back to step 1 (next round).
 
 ## On continue (`/ClaudeXCodex:agent-loop` or `/ClaudeXCodex:agent-loop continue`)
 

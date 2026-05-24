@@ -6,7 +6,6 @@ from pathlib import Path
 from typing import Any
 
 from agent_loop.diff_capture import DiffStats
-from agent_loop.result_parser import ClaudeResult
 from agent_loop.shared_io import SharedDelta
 
 
@@ -15,7 +14,6 @@ def build_review_payload(
     out_path: Path | None = None,
     round_n: int,
     goal_summary: str,
-    result: ClaudeResult,
     stats: DiffStats,
     shared_delta: SharedDelta,
     artifact_paths: dict[str, str],
@@ -25,17 +23,6 @@ def build_review_payload(
     payload: dict[str, Any] = {
         "round": round_n,
         "goal_summary": goal_summary,
-        "claude_decision_hint": result.decision_hint,
-        "result_summary": {
-            "changed_files": result.changed_files,
-            "commands_run": result.commands_run,
-            "test_outcome": result.test_outcome,
-            "claude_notes": result.summary,
-            "open_questions": result.open_questions,
-            "requested_reading": result.requested_reading,
-            "plan_deviations": result.plan_deviations,
-            "requires_user": result.requires_user,
-        },
         "diff_summary": {
             "files_changed": stats.files_changed,
             "insertions": stats.insertions,

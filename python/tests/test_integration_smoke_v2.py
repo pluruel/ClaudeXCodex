@@ -77,14 +77,12 @@ def test_e2e_claude_entry_flow(tmp_repo: Path, codex_stub) -> None:
     r4b = _run(["mark-dispatched", "--run", run_id, "--round", "1"], cwd=tmp_repo)
     assert r4b.returncode == 0, r4b.stderr
 
-    # 5. simulate worker doing work + claude-result.md
+    # 5. simulate worker doing work + progress entries
     (tmp_repo / "src.txt").write_text("hello\n", encoding="utf-8")
     subprocess.run(["git", "add", "src.txt"], cwd=tmp_repo, check=True)
     rd = run_dir / "rounds" / "01"
-    (rd / "claude-result.md").write_text(
-        "# Claude Result\n\n## Summary\nadded src.txt\n\n"
-        "## Changed Files\n- src.txt\n\n## Test Outcome\npass\n\n"
-        "## Decision Hint\ncompleted\n\n## Requires User\nfalse\n",
+    (rd / "progress.md").write_text(
+        "[done] r1-i1 implementation: added src.txt\n",
         encoding="utf-8",
     )
 

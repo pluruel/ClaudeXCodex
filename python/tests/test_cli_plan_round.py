@@ -553,7 +553,6 @@ def test_plan_round_deterministic_sections_present(tmp_repo: Path) -> None:
     assert "## Required Reading" in prompt_text
     assert "## Out of Scope" in prompt_text
     assert "## Forbidden Actions" in prompt_text
-    assert "## claude-result.md schema" in prompt_text
     assert "## Mandatory Outputs" in prompt_text
     assert "## Reading List Discipline" in prompt_text
 
@@ -721,14 +720,6 @@ def test_review_round_surfaces_parse_failure_flag(tmp_repo: Path, codex_stub) ->
     rp = run_dir / "rounds" / "01" / "round_plan.json"
     assert json.loads(rp.read_text(encoding="utf-8")).get("parse_failed") is True
 
-    # Write a minimal claude-result.md so review-round can proceed
-    rd = run_dir / "rounds" / "01"
-    (rd / "claude-result.md").write_text(
-        "# Claude Result\n\n## Summary\ndone\n\n"
-        "## Changed Files\n\n## Commands Run\n\n"
-        "## Test Outcome\npass\n\n## Decision Hint\ncompleted\n\n## Requires User\nfalse\n",
-        encoding="utf-8",
-    )
     _run(["mark-dispatched", "--run", run_id, "--round", "1"], cwd=tmp_repo)
     _run(["mark-worker-done", "--run", run_id, "--round", "1"], cwd=tmp_repo)
 
@@ -892,7 +883,6 @@ def test_build_review_payload_includes_verification_outcomes(tmp_path: Path) -> 
     when provided, and emit an empty list when not provided."""
     from agent_loop.diff_capture import DiffStats
     from agent_loop.payload import build_review_payload
-    from agent_loop.result_parser import ClaudeResult
     from agent_loop.shared_io import SharedDelta
 
     out = tmp_path / "review-payload.json"
@@ -904,7 +894,6 @@ def test_build_review_payload_includes_verification_outcomes(tmp_path: Path) -> 
         out_path=out,
         round_n=1,
         goal_summary="test goal",
-        result=ClaudeResult(summary="done"),
         stats=DiffStats(files_changed=0, insertions=0, deletions=0),
         shared_delta=SharedDelta(),
         artifact_paths={},
@@ -928,7 +917,6 @@ def test_build_review_payload_includes_verification_outcomes(tmp_path: Path) -> 
         out_path=out2,
         round_n=1,
         goal_summary="g",
-        result=ClaudeResult(summary="s"),
         stats=DiffStats(files_changed=0, insertions=0, deletions=0),
         shared_delta=SharedDelta(),
         artifact_paths={},
@@ -1082,3 +1070,86 @@ def test_plan_round_emits_phase_fields(tmp_repo: Path) -> None:
     assert "total_phases" in js, f"total_phases missing from plan-round output: {js}"
     assert js["current_phase"] == 1
     assert js["total_phases"] == 1
+
+
+# ---------------------------------------------------------------------------
+# consecutive_needs_changes unit tests
+# ---------------------------------------------------------------------------
+
+def test_plan_round_consecutive_needs_changes_no_history(tmp_repo: Path) -> None:
+    """No history -> consecutive_needs_changes == 0 in plan-round output."""
+    r1 = _run(["init-run", "--goal", "g", "--slug", "s"], cwd=tmp_repo)
+    assert r1.returncode == 0, r1.stderr
+    run_id = json.loads(r1.stdout)["run_id"]
+    plan = tmp_repo / ".agent-loop" / "runs" / run_id / "plan.md"
+    plan.write_text("# Plan\n\n## Tasks\n1. [ ] do A\n", encoding="utf-8")
+
+    env = _codex_stub_sequence(tmp_repo, [
+        _merged_envelope(
+            round_n=1, worker_model="haiku", reason="mechanical",
+            reasoning_effort="low", task_description="Implement A",
+        ),
+    ])
+    r = _run(["plan-round", "--run", run_id], cwd=tmp_repo, env_overrides=env)
+    assert r.returncode == 0, r.stderr
+    js = json.loads(r.stdout)
+    assert "consecutive_needs_changes" in js, (
+        f"consecutive_needs_changes missing from plan-round output: {js}"
+    )
+    assert js["consecutive_needs_changes"] == 0
+
+
+def test_plan_round_consecutive_needs_changes_counter() -> None:
+    """_count_consecutive_needs_changes returns N when the last N rounds are NEEDS_CHANGES."""
+    from agent_loop.cli import _count_consecutive_needs_changes
+    from agent_loop.run_state import RunState, RoundEntry
+
+    rs = RunState(run_id="r", goal_path="g", plan_path="p", rounds=[
+        RoundEntry(n=1, decision="NEEDS_CHANGES"),
+        RoundEntry(n=2, decision="NEEDS_CHANGES"),
+        RoundEntry(n=3, decision="NEEDS_CHANGES"),
+    ])
+    assert _count_consecutive_needs_changes(rs) == 3
+
+    rs2 = RunState(run_id="r", goal_path="g", plan_path="p", rounds=[
+        RoundEntry(n=1, decision="APPROVE"),
+        RoundEntry(n=2, decision="NEEDS_CHANGES"),
+    ])
+    assert _count_consecutive_needs_changes(rs2) == 1
+
+
+def test_plan_round_consecutive_needs_changes_phase_boundary() -> None:
+    """PHASE_COMPLETE resets the count: only NEEDS_CHANGES in the new phase are counted."""
+    from agent_loop.cli import _count_consecutive_needs_changes
+    from agent_loop.run_state import RunState, RoundEntry
+
+    rs = RunState(run_id="r", goal_path="g", plan_path="p", rounds=[
+        RoundEntry(n=1, decision="NEEDS_CHANGES"),
+        RoundEntry(n=2, decision="NEEDS_CHANGES"),
+        RoundEntry(n=3, decision="PHASE_COMPLETE"),   # phase boundary
+        RoundEntry(n=4, decision="NEEDS_CHANGES"),
+        RoundEntry(n=5, decision="NEEDS_CHANGES"),
+    ])
+    # Only rounds 4 and 5 are in the new phase tail; PHASE_COMPLETE stops scan
+    assert _count_consecutive_needs_changes(rs) == 2
+
+
+def test_plan_round_consecutive_needs_changes_none_decision_skipped() -> None:
+    """None (in-progress) decisions are skipped; do not break the consecutive count."""
+    from agent_loop.cli import _count_consecutive_needs_changes
+    from agent_loop.run_state import RunState, RoundEntry
+
+    rs = RunState(run_id="r", goal_path="g", plan_path="p", rounds=[
+        RoundEntry(n=1, decision="NEEDS_CHANGES"),
+        RoundEntry(n=2, decision=None),   # in-progress, skip
+        RoundEntry(n=3, decision=None),   # in-progress, skip
+    ])
+    # None decisions are skipped; round 1 is NEEDS_CHANGES -> count == 1
+    assert _count_consecutive_needs_changes(rs) == 1
+
+    rs2 = RunState(run_id="r", goal_path="g", plan_path="p", rounds=[
+        RoundEntry(n=1, decision=None),
+        RoundEntry(n=2, decision=None),
+    ])
+    # All None -> count == 0
+    assert _count_consecutive_needs_changes(rs2) == 0

@@ -23,10 +23,6 @@ def test_review_round_emits_decision(tmp_repo: Path, codex_stub) -> None:
     rd = tmp_repo / ".agent-loop" / "runs" / run_id / "rounds" / "01"
     rd.mkdir(parents=True)
     (rd / "claude-prompt.md").write_text("hi", encoding="utf-8")
-    (rd / "claude-result.md").write_text(
-        "# Claude Result\n\n## Summary\ndid stuff\n\n## Test Outcome\npass\n\n## Decision Hint\ncompleted\n\n## Requires User\nfalse\n",
-        encoding="utf-8",
-    )
     (rd / "diff.patch").write_text("", encoding="utf-8")
 
     # state needs round 1 registered
@@ -55,6 +51,8 @@ def test_review_round_emits_decision(tmp_repo: Path, codex_stub) -> None:
     assert not (rd / "diff.patch").exists()
     assert not (rd / "diff-stats.json").exists()
     assert (rd / "review-payload.json").exists()
+    # review-round must not emit missing_claude_result flag
+    assert "missing_claude_result" not in js.get("safety_flags", [])
 
     state2 = json.loads(state_p.read_text(encoding="utf-8"))
     assert state2["rounds"][-1]["decision"] == "APPROVE"
@@ -80,10 +78,6 @@ def test_review_round_debug_mode_preserves_intermediate_artifacts(
     run_id = json.loads(r1.stdout)["run_id"]
     rd = tmp_repo / ".agent-loop" / "runs" / run_id / "rounds" / "01"
     rd.mkdir(parents=True)
-    (rd / "claude-result.md").write_text(
-        "# Claude Result\n\n## Summary\ndid stuff\n\n## Test Outcome\npass\n\n## Decision Hint\ncompleted\n\n## Requires User\nfalse\n",
-        encoding="utf-8",
-    )
     (rd / "diff.patch").write_text(
         "diff --git a/a.txt b/a.txt\n--- a/a.txt\n+++ b/a.txt\n@@ -0,0 +1 @@\n+hi\n",
         encoding="utf-8",
@@ -118,10 +112,6 @@ def test_review_round_emits_severity_and_carry_forward(tmp_repo: Path, codex_stu
     rd = tmp_repo / ".agent-loop" / "runs" / run_id / "rounds" / "01"
     rd.mkdir(parents=True)
     (rd / "claude-prompt.md").write_text("hi", encoding="utf-8")
-    (rd / "claude-result.md").write_text(
-        "# Claude Result\n\n## Summary\ndid stuff\n\n## Test Outcome\npass\n\n## Decision Hint\ncompleted\n\n## Requires User\nfalse\n",
-        encoding="utf-8",
-    )
     (rd / "diff.patch").write_text("", encoding="utf-8")
 
     state_p = tmp_repo / ".agent-loop" / "runs" / run_id / "state.json"

@@ -884,6 +884,24 @@ def _bounded_memo(memo_text: str, max_rounds: int = 3) -> str:
     return memo_text[:boundaries[0]] + memo_text[start:]
 
 
+def _count_consecutive_needs_changes(rs: "RunState") -> int:
+    """Count consecutive NEEDS_CHANGES decisions at the tail of rs.rounds.
+
+    Scans rounds in reverse, skipping None (in-progress) decisions.
+    Stops at the first PHASE_COMPLETE or APPROVE decision (phase boundary / run reset).
+    Returns 0 when there is no history or no consecutive NEEDS_CHANGES tail.
+    """
+    count = 0
+    for entry in reversed(rs.rounds):
+        if entry.decision is None:
+            continue
+        if entry.decision == "NEEDS_CHANGES":
+            count += 1
+        else:
+            break
+    return count
+
+
 @register("plan-round")
 def _cmd_plan_round(args) -> int:
     from agent_loop.codex_client import call_codex, CodexCallError
@@ -891,6 +909,7 @@ def _cmd_plan_round(args) -> int:
     repo = _Path(args.repo).resolve()
     run_dir = _run_dir(repo, args.run)
     rs = RunState.load(run_dir / "state.json")
+    consecutive_nc = _count_consecutive_needs_changes(rs)
     next_n = (rs.rounds[-1].n + 1) if rs.rounds else 1
     cfg = _load_config(repo)
     allowed_models, default_model = _worker_model_config(cfg)
@@ -1095,6 +1114,7 @@ Commit decision rules:
         "round_n": next_n,
         "current_phase": rs.current_phase,
         "total_phases": rs.total_phases,
+        "consecutive_needs_changes": consecutive_nc,
         "prompt_path": str(rd / "claude-prompt.md"),
         "round_plan_path": str(round_plan_path),
         "worker_model": round_plan["worker_model"],
@@ -1210,7 +1230,6 @@ def _cmd_review_round(args) -> int:
     from agent_loop.codex_client import call_codex, CodexCallError
     from agent_loop.diff_capture import compute_stats
     from agent_loop.payload import build_review_payload
-    from agent_loop.result_parser import parse_result, ClaudeResult
     from agent_loop.safety import SafetyConfig
     from agent_loop.shared_io import SharedDelta
 
@@ -1252,13 +1271,6 @@ def _cmd_review_round(args) -> int:
         except (_json.JSONDecodeError, OSError):
             safety_flags.append("round_plan_parse_failed")
 
-    result_path = rd / "claude-result.md"
-    if result_path.exists():
-        result = parse_result(result_path)
-    else:
-        result = ClaudeResult(summary="(no claude-result.md found)")
-        safety_flags.append("missing_claude_result")
-
     # B3: Scan progress.md for verification outcomes.
     verification_outcomes = _scan_verification_outcomes(rd / "progress.md")
 
@@ -1268,11 +1280,10 @@ def _cmd_review_round(args) -> int:
         out_path=rd / "review-payload.json",
         round_n=args.round,
         goal_summary=goal_summary,
-        result=result,
         stats=stats,
         shared_delta=delta,
         artifact_paths={
-            "result": str(result_path.relative_to(repo)) if result_path.exists() else "",
+            "result": "",
             "diff": str(diff_path.relative_to(repo)),
             "test_log": str((rd / "test-log.txt").relative_to(repo)) if (rd / "test-log.txt").exists() else "",
             "messages": "",
@@ -1284,13 +1295,25 @@ def _cmd_review_round(args) -> int:
     memo_path = run_dir / "memo.md"
     memo = memo_path.read_text(encoding="utf-8") if memo_path.exists() else ""
 
-    result_md = result_path.read_text(encoding="utf-8") if result_path.exists() else "(missing)"
-
     test_results_path = run_dir / "shared" / "test-results.md"
     test_results_content = (
         test_results_path.read_text(encoding="utf-8")
         if test_results_path.exists()
         else "(none — test results unavailable; treat test status as unknown)"
+    )
+
+    shared_decisions_path = run_dir / "shared" / "decisions.md"
+    shared_decisions_content = (
+        shared_decisions_path.read_text(encoding="utf-8")
+        if shared_decisions_path.exists()
+        else "(none)"
+    )
+
+    shared_knowledge_path = run_dir / "shared" / "knowledge.md"
+    shared_knowledge_content = (
+        shared_knowledge_path.read_text(encoding="utf-8")
+        if shared_knowledge_path.exists()
+        else "(none)"
     )
 
     meta_prompt = f"""You are reviewing one round of Claude's work.
@@ -1338,14 +1361,16 @@ Note: safety_flags in the payload are informational context. Use them to inform 
 ## Accumulated Memo So Far
 {memo or "(empty)"}
 
-## Claude's Result Report
-{result_md}
-
 ## Test Results (recorded by verification subtask)
 {test_results_content}
 {current_phase_section}
-## Plan Deviations
-{chr(10).join("- " + item for item in result.plan_deviations) if result.plan_deviations else "(none reported)"}
+## Shared Context
+
+### decisions.md
+{shared_decisions_content}
+
+### knowledge.md
+{shared_knowledge_content}
 """
     try:
         res = call_codex(meta_prompt)
@@ -1602,7 +1627,11 @@ def _cmd_finalize(args) -> int:
         f"# Final Report — {rs.run_id}\n\nStatus: {rs.status}\n\n## Round Memos\n\n{memo}\n",
         encoding="utf-8",
     )
-    _emit({"final_report": str(run_dir / "final-report.md"), "status": rs.status})
+    plan_file = repo / ".agent-loop-plan.md"
+    plan_file_cleaned = plan_file.exists()
+    if plan_file_cleaned:
+        plan_file.unlink()
+    _emit({"final_report": str(run_dir / "final-report.md"), "status": rs.status, "plan_file_cleaned": plan_file_cleaned})
     return 0
 
 

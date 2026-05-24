@@ -15,7 +15,7 @@ A Claude Code plugin where the interactive Claude session is the supervisor, dis
 Default compact mode keeps the human-facing record small:
 
 - `goal.md`, `plan.md`, `memo.md`, `state.json`, `final-report.md`
-- per round: `claude-prompt.md`, `claude-result.md`, `codex-review.md`, `review-payload.json`
+- per round: `claude-prompt.md`, `codex-review.md`, `review-payload.json`
 
 Debug mode additionally preserves intermediate files such as `diff.patch`,
 `diff-stats.json`, and worker `progress.md`. Enable it per target repo:
@@ -147,7 +147,7 @@ Three actors, three context budgets:
 
 - **Codex** (`codex exec --json`, headless subprocess) — does the heavy planning and the per-round review. Each invocation is a fresh process; nothing accumulates.
 - **Worker subagents** (Claude via Task tool) — do the implementation. Each dispatch is a fresh subagent context that only sees the round's `claude-prompt.md` plus what it chooses to read on disk. Workers reply to the supervisor with **exactly one line**: `OK` on success or `FAIL: <one sentence>` on failure. No summaries, no file lists.
-- **Supervisor** (your interactive Claude session) — only sees small JSON blobs from CLI subcommands. The supervisor never reads `codex-review.md`, `claude-result.md`, full diffs, or test logs. Round memos (used as carry-forward into the next round's prompt) are auto-composed by `review-round` from Codex's structured review markdown — the supervisor just calls the subcommand.
+- **Supervisor** (your interactive Claude session) — only sees small JSON blobs from CLI subcommands. The supervisor never reads `codex-review.md`, full diffs, or test logs. Round memos (used as carry-forward into the next round's prompt) are auto-composed by `review-round` from Codex's structured review markdown — the supervisor just calls the subcommand.
 
 This keeps the supervisor's per-turn token cost roughly constant regardless of how large the artifacts are or how many rounds you run.
 

@@ -17,9 +17,8 @@ Safety is enforced in two places:
 | Flag | Meaning |
 |---|---|
 | `diff_has_sensitive` | Diff includes paths matching `config/defaults.toml` `[safety.sensitive_paths]` patterns. |
-| `missing_claude_result` | Worker didn't write `claude-result.md`. |
 
-(Diff-size thresholds were removed: with subtask-based dispatch a "large" round is normal and the size flag misfired more often than it caught real issues. Real safety here is content-based — sensitive paths or a missing result — not byte count.)
+(Diff-size thresholds were removed: with subtask-based dispatch a "large" round is normal and the size flag misfired more often than it caught real issues. Real safety here is content-based — sensitive paths — not byte count.)
 
 ## Supervisor reaction matrix
 

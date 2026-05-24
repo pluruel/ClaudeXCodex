@@ -61,15 +61,15 @@ def determine_resume_action(rs: RunState, *, run_dir: Path) -> ResumePlan:
     if last.phase == "init":
         return ResumePlan(action="dispatch", notes="prompt rendered, never dispatched")
     if last.phase == "dispatched":
-        result_md = round_dir / "claude-result.md"
-        if result_md.exists():
+        progress_md = round_dir / "progress.md"
+        if progress_md.exists() and "[done]" in progress_md.read_text(encoding="utf-8"):
             return ResumePlan(
                 action="advance_to_review",
-                notes="claude-result.md exists; treating as completed",
+                notes="progress.md has completed entries; treating as worker done",
             )
         return ResumePlan(
             action="user_confirm",
-            notes="dispatch interrupted without claude-result.md",
+            notes="dispatch interrupted without completed worker progress",
             options=["redispatch", "abandon-round", "abort-run"],
         )
     if last.phase == "claude_completed":

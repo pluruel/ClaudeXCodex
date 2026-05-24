@@ -28,7 +28,6 @@ input.
   },
   "safety_flags": [],
   "artifact_paths": {
-    "result": ".agent-loop/runs/<id>/rounds/02/claude-result.md",
     "diff": ".agent-loop/runs/<id>/rounds/02/diff.patch",
     "test_log": ".agent-loop/runs/<id>/rounds/02/test-log.txt",
     "messages": ".agent-loop/runs/<id>/rounds/02/claude-messages.jsonl"

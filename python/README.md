@@ -33,7 +33,6 @@ At plugin runtime, the skill calls `"${CLAUDE_PLUGIN_ROOT}/bin/agent-loop"` dire
 - `scout.py` — file tree + grep signal extractor (Codex-facing JSON)
 - `shared_io.py` — shared/ append + delta
 - `prompt_render.py` — Claude worker prompt template
-- `result_parser.py` — claude-result.md → ClaudeResult
 - `progress_parser.py` — progress.md tail analysis
 - `diff_capture.py` — git baseline + diff + stats
 - `payload.py` — review-payload.json builder

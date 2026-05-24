@@ -71,14 +71,12 @@ def render_claude_prompt(ctx: RoundContext) -> str:
 1. **progress.md** — Append a line at every meaningful step to
    `{ctx.round_dir_rel}/progress.md`. Markers: `[done]` / `[doing]` / `[planned]`.
    Keep at most one `[doing]`.
-2. **claude-result.md** — At the end, write
-   `{ctx.round_dir_rel}/claude-result.md` following the schema below.
-3. **shared/knowledge.md** — When you discover facts about the repo that
+2. **shared/knowledge.md** — When you discover facts about the repo that
    outlast this round (file purpose, conventions, dependencies), append to
    `{ctx.shared_dir_rel}/knowledge.md`.
-4. **shared/decisions.md** — When you choose between alternatives, log
+3. **shared/decisions.md** — When you choose between alternatives, log
    the decision and reason to `{ctx.shared_dir_rel}/decisions.md`.
-5. **shared/open-questions.md** — Unanswered questions go here; later
+4. **shared/open-questions.md** — Unanswered questions go here; later
    rounds may resolve them.
 
 ## Reading List Discipline (token frugality)
@@ -88,8 +86,7 @@ def render_claude_prompt(ctx: RoundContext) -> str:
 - Avoid wide Glob/Grep across the whole repo. Operate inside the
   Reading List paths.
 - If you truly need more, do NOT read it; record it in
-  `claude-result.md` under "Requested Reading" so the controller can
-  add it next round.
+  `{ctx.shared_dir_rel}/open-questions.md` so the supervisor can address it next round.
 
 ## Forbidden Actions
 
@@ -101,35 +98,4 @@ def render_claude_prompt(ctx: RoundContext) -> str:
 (These are also enforced by a PreToolUse hook; you will get a block
 message if attempted.)
 
-## claude-result.md schema
-
-```
-# Claude Result
-
-## Summary
-<1-3 sentences>
-
-## Changed Files
-- path1
-- path2
-
-## Commands Run
-- cmd1
-- cmd2
-
-## Test Outcome
-pass | fail | partial | not_run
-
-## Decision Hint
-completed | incomplete | blocked
-
-## Open Questions
-- ...
-
-## Requested Reading
-- ...
-
-## Requires User
-true | false
-```
 """

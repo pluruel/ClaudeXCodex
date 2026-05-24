@@ -30,7 +30,7 @@ def test_resume_action_from_dispatched_with_result(tmp_path: Path) -> None:
     rs.set_round_phase(1, "dispatched")
     round_dir = tmp_path / "rounds" / "01"
     round_dir.mkdir(parents=True)
-    (round_dir / "claude-result.md").write_text("# Claude Result\n\n## Summary\nok\n")
+    (round_dir / "progress.md").write_text("[done] r1-i1 implementation: task completed\n")
     plan = determine_resume_action(rs, run_dir=tmp_path)
     assert plan.action == "advance_to_review"
     assert plan.notes  # explanatory text included
