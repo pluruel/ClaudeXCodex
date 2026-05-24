@@ -12,8 +12,9 @@ You are the supervisor of a bounded review loop. Your context must stay lean. Th
 - `/ClaudeXCodex:agent-loop <goal text>` — start a new run. Everything after `/ClaudeXCodex:agent-loop ` is the goal. Quotes are NOT required, e.g. `/ClaudeXCodex:agent-loop fix the login bug`. If the user did quote it (`/ClaudeXCodex:agent-loop "fix the login bug"`), strip the outer quotes before passing along.
 - `/ClaudeXCodex:agent-loop` (no text after) — resume the most recently active run.
 - `/ClaudeXCodex:agent-loop continue` — explicit resume form; also accepted.
+- `/ClaudeXCodex:agent-loop --plan <path>` — start execution using an existing plan file. The file must contain `authorized: CLAUDE_X_CODEX_PLAN` in its YAML frontmatter.
 
-Decision rule: if the message after `/ClaudeXCodex:agent-loop` is empty or is exactly the word `continue`, treat as resume. Otherwise treat the whole remainder as the goal and follow "On start" below.
+Decision rule: if the message after `/ClaudeXCodex:agent-loop` is empty or is exactly the word `continue`, treat as resume. If it starts with `--plan `, treat as `--plan <file>` invocation and follow "On start with `--plan <file>`" below. Otherwise treat the whole remainder as the goal and follow "On start" below.
 
 ## CLI invocation convention
 
@@ -124,6 +125,27 @@ unchanged from the original SKILL.md.
 - You only ingest the small JSON each CLI subcommand emits.
 - For details, you can run the CLI's `inspect` subcommand with narrow `--lines` to extract a slice — but only when JSON is genuinely insufficient (rare). `--lines` accepts `N` (first N), `N-` (from N onward), or `A-B` (range). Example: `agent-loop inspect --run <id> --round N --file claude-result.md --lines 80`.
 - You never call `codex exec` or `codex` directly — always via the CLI's `plan-init|plan-round|review-round` subcommands.
+
+## On start with `--plan <file>`
+
+1. Read the first 10 lines of `<file>` to check for `authorized: CLAUDE_X_CODEX_PLAN` in YAML frontmatter (between `---` delimiters at the top).
+
+2. **Token absent** → Tell the user:
+   > "This file doesn't have the `authorized: CLAUDE_X_CODEX_PLAN` token. Run `/ClaudeXCodex:plan --file <path>` to review and authorize it first."
+   END.
+
+3. **Token present** → Run:
+   ```bash
+   "${CLAUDE_PLUGIN_ROOT}/bin/agent-loop" init-run \
+     --goal "<extract Goal section from file, or use filename as fallback>" \
+     --slug "<short-slug from filename>" \
+     --plan-file "<path>"
+   ```
+   → JSON `{run_id, run_dir}`. Remember `run_id`.
+
+4. Run `plan-init --run <run_id>`. Verify `"plan_source": "pre-existing"` in output.
+
+5. Enter the normal round loop.
 
 ## On start (`/ClaudeXCodex:agent-loop <goal text>`)
 

@@ -21,6 +21,8 @@ python/.venv/
 # these probe files to land in git status.
 .codex-tmp/
 **/.codex-tmp/
+.tmp/
+**/.tmp/
 
 # Local agent-loop runs (never commit user run logs)
 .agent-loop/

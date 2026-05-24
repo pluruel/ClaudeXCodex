@@ -28,6 +28,8 @@ def build_parser() -> argparse.ArgumentParser:
     _add_common(p)
     p.add_argument("--goal", required=True)
     p.add_argument("--slug", required=True)
+    p.add_argument("--plan-file", default=None,
+                   help="path to an already-authorized plan file; copied to plan.md in the run dir")
 
     # plan-init
     p = sub.add_parser("plan-init", help="ask Codex to draft initial plan.md")
@@ -164,6 +166,7 @@ def register(name: str):
 
 import datetime as _dt
 import json as _json
+import shutil as _shutil
 from pathlib import Path as _Path
 
 from agent_loop.run_state import RunState
@@ -732,11 +735,19 @@ def _cmd_init_run(args) -> int:
     repo = _Path(args.repo).resolve()
     run_id = _unique_run_id(repo, args.slug)
     run_dir = _run_dir(repo, run_id)
+    plan_file = getattr(args, "plan_file", None)
+    if plan_file is not None:
+        src = _Path(plan_file)
+        if not src.exists():
+            print(f"plan-file not found: {plan_file}", file=sys.stderr)
+            return 1
     (run_dir / "rounds").mkdir(parents=True, exist_ok=True)
     (run_dir / "shared").mkdir(parents=True, exist_ok=True)
     goal = _strip_routing_metadata(args.goal)
     (run_dir / "goal.md").write_text(goal + "\n", encoding="utf-8")
     (run_dir / "memo.md").write_text("# Round Memos\n\n", encoding="utf-8")
+    if plan_file is not None:
+        _shutil.copy2(src, run_dir / "plan.md")
     rs = RunState.new(run_id=run_id, goal_path="goal.md", plan_path="plan.md")
     rs.save(run_dir / "state.json")
     _emit({"run_id": run_id, "run_dir": str(run_dir)})
@@ -765,23 +776,31 @@ def _cmd_plan_init(args) -> int:
     repo = _Path(args.repo).resolve()
     run_dir = _run_dir(repo, args.run)
     goal = (run_dir / "goal.md").read_text(encoding="utf-8").strip()
-
-    # First Codex call: draft plan.md (existing behavior).
-    plan_prompt = (
-        "You are drafting the initial implementation plan for the following goal. "
-        "Output ONLY a markdown document with two sections:\n\n"
-        "# Plan\n\n## Tasks\n1. [ ] <first concrete task>\n2. [ ] ...\n\n"
-        "## Notes\n<short strategic notes>\n\n"
-        "Aim for 3-7 tasks, each completable in one round. No prose outside these sections.\n\n"
-        f"## Goal\n{goal}\n"
-    )
-    try:
-        plan_res = call_codex(plan_prompt)
-    except CodexCallError as e:
-        print(f"codex error: {e}", file=sys.stderr)
-        return 1
     plan_path = run_dir / "plan.md"
-    plan_path.write_text(plan_res.final_text, encoding="utf-8")
+
+    if plan_path.exists():
+        # Pre-existing plan (written by init-run --plan-file or the plan skill).
+        # Skip the draft Codex call; use the file as-is.
+        plan_text = plan_path.read_text(encoding="utf-8")
+        plan_source = "pre-existing"
+    else:
+        # First Codex call: draft plan.md (existing behavior).
+        plan_prompt = (
+            "You are drafting the initial implementation plan for the following goal. "
+            "Output ONLY a markdown document with two sections:\n\n"
+            "# Plan\n\n## Tasks\n1. [ ] <first concrete task>\n2. [ ] ...\n\n"
+            "## Notes\n<short strategic notes>\n\n"
+            "Aim for 3-7 tasks, each completable in one round. No prose outside these sections.\n\n"
+            f"## Goal\n{goal}\n"
+        )
+        try:
+            plan_res = call_codex(plan_prompt)
+        except CodexCallError as e:
+            print(f"codex error: {e}", file=sys.stderr)
+            return 1
+        plan_text = plan_res.final_text
+        plan_path.write_text(plan_text, encoding="utf-8")
+        plan_source = "codex"
 
     # Second Codex call: generate phase docs.
     phases_prompt = (
@@ -802,7 +821,7 @@ def _cmd_plan_init(args) -> int:
         '  ]\n'
         '}\n\n'
         f"## Goal\n{goal}\n\n"
-        f"## Plan (tasks overview)\n{plan_res.final_text}\n"
+        f"## Plan (tasks overview)\n{plan_text}\n"
     )
     try:
         phases_res = call_codex(phases_prompt)
@@ -837,6 +856,7 @@ def _cmd_plan_init(args) -> int:
 
     _emit({
         "plan_path": str(plan_path),
+        "plan_source": plan_source,
         "phases": phases_index,
         "summary": f"{len(phases)} phase(s) drafted",
     })
