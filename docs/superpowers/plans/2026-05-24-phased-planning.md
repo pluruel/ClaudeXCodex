@@ -2,6 +2,9 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
+**Date:** 2026-05-24
+**Status:** Implementation-ready (spec approved, ASCII-safe)
+
 **Goal:** Add a phase layer between the global goal and per-round tasks so Codex can pre-generate strategic phase docs, inject them as context, and autonomously transition between phases.
 
 **Architecture:** `plan-init` makes a second Codex call to generate `phases.json` + `phases/phase-N.md` docs. `plan-round` and `review-round` load the current phase doc and inject it into every Codex prompt. `review-round` gains `PHASE_COMPLETE` as a decision value (removing `STOP_FOR_USER`). New `advance-phase` CLI subcommand asks Codex to update the next phase doc and increments `current_phase` in `state.json`. `resume.py` detects interrupted phase transitions via a `phase_advance_pending` flag. `SKILL.md` and reference docs are updated to reflect the new flow.
@@ -10,26 +13,232 @@
 
 ---
 
+## Cross-References
+
+| Document | Location | Relationship |
+|---|---|---|
+| Design spec | `docs/superpowers/specs/2026-05-24-phased-planning-design.md` | Authoritative design; this plan implements it |
+| Supervisor skill | `skills/agent-loop/SKILL.md` | Updated in Task 7; supervisor round loop instructions |
+| Safety rules | `skills/agent-loop/safety-rules.md` | Updated in Task 7; decision matrix |
+| Resume doc | `skills/agent-loop/resume-run.md` | Updated in Task 7; resume action table |
+| RunState | `python/agent_loop/run_state.py` | Foundation; gains phase fields (Task 1) |
+| CLI | `python/agent_loop/cli.py` | Most code changes (Tasks 2--5) |
+| Resume logic | `python/agent_loop/resume.py` | Gains `advance_phase` action (Task 6) |
+
+---
+
+## Purpose
+
+The current agent-loop breaks large goals into 3--7 flat tasks in `plan.md`. For long-running goals this creates context drift: Codex and workers lose the strategic thread after several rounds because the memo window is bounded to 3 rounds. There is no persistent mid-level structure between the immutable goal and the per-round task.
+
+The phased planning feature adds a **strategic phase layer**:
+
+- Codex pre-generates phase documents at run start (1--5 phases, decided by Codex based on goal complexity)
+- Each phase has a markdown document holding the phase objective, key context, constraints, completion criteria, and anticipated file areas
+- Phase documents are injected into every Codex prompt (plan-round and review-round) so Codex always knows its mid-level objective
+- Phase documents are updated at phase boundaries to reflect actual results before the next phase begins
+- The global `goal.md` remains immutable -- the north star for the entire run
+
+This is transparent to worker subagents: workers receive only their subtask description, not phase docs.
+
+---
+
+## Workflow Phases
+
+### Artifact Structure
+
+```
+.agent-loop/runs/<run_id>/
+  goal.md            # immutable -- unchanged
+  plan.md            # Codex strategic notes -- written by plan-init (first Codex call)
+  phases.json        # NEW: phase index [{phase_n, title, objective, doc_path}]
+  phases/
+    phase-01.md      # NEW: Codex-only context doc for phase 1
+    phase-02.md      # updated by advance-phase before phase 2 starts
+    ...
+  state.json         # gains current_phase, total_phases, phase_advance_pending
+  memo.md            # unchanged
+  shared/            # unchanged
+  rounds/            # unchanged
+```
+
+### Phase Hierarchy
+
+```
+Goal (immutable)
++-- Phase 1  <-- phase-01.md (Codex context)
+    +-- Round 1  ->  NEEDS_CHANGES
+    +-- Round 2  ->  NEEDS_CHANGES
+    +-- Round 3  ->  PHASE_COMPLETE
++-- Phase 2  <-- phase-02.md (updated by advance-phase)
+    +-- Round 4  ->  NEEDS_CHANGES
+    +-- Round 5  ->  PHASE_COMPLETE
++-- Phase 3  <-- phase-03.md (updated by advance-phase)
+    +-- Round 6  ->  NEEDS_CHANGES
+    +-- Round 7  ->  APPROVE
+```
+
+Round numbers are continuous across all phases. Phase transitions are transparent to the round loop -- the supervisor just calls `advance-phase` between rounds.
+
+### Decision Values
+
+| Decision | Meaning | Supervisor action |
+|---|---|---|
+| `NEEDS_CHANGES` | Round incomplete | Next round, same phase |
+| `PHASE_COMPLETE` | Phase objective met | Call `advance-phase`; if `is_last_phase` finalize; else next round |
+| `APPROVE` | Entire goal achieved | `finalize` |
+
+`STOP_FOR_USER` is removed entirely. Codex drives all decisions autonomously. Safety flags (if any) are passed to Codex in the review payload; Codex decides the appropriate decision.
+
+### Codex Prompt Injection
+
+`plan-round` and `review-round` inject the current phase doc between `## Goal` and `## Plan`:
+
+```
+## Goal
+<goal.md content>
+
+## Current Phase (Phase 2: "Data layer")
+<phase-02.md full content>
+
+## Plan
+<plan.md content>
+
+## Memo So Far
+<bounded memo>
+```
+
+Workers do not receive this section -- only the subtask description is passed to them.
+
+---
+
+## Handoff Rules
+
+### Phase Transition Protocol
+
+Phase transitions follow a strict two-step handoff:
+
+1. **`review-round` emits `PHASE_COMPLETE`** and sets `phase_advance_pending = True` in `state.json`.
+2. **Supervisor immediately calls `advance-phase`:**
+   - Loads `current_phase` and `total_phases` from `state.json`
+   - If `current_phase >= total_phases`: clears `phase_advance_pending`, emits `{"is_last_phase": true}` -- supervisor calls `finalize`
+   - Otherwise: calls Codex to update the next phase doc with context from `shared/knowledge.md`, `shared/decisions.md`, and the last `codex-review.md`; increments `current_phase`; clears `phase_advance_pending`
+3. **Supervisor announces:** `Phase <N> complete -> advancing to Phase <N+1>: "<title from phases.json>"`
+4. **Loop back** to round-loop step 1 (next round in new phase context)
+
+### Resume Safety
+
+`resume.py` checks `phase_advance_pending` before all other state checks. If `True`, it returns action `advance_phase` -- so an interrupted phase transition is safely resumed by re-calling `advance-phase`. No data is lost because:
+- `phase_advance_pending` persists in `state.json`
+- `current_phase` has not yet been incremented (advance-phase is idempotent at resume)
+- Phase docs are on disk and survive process restart
+
+### Backward Compatibility
+
+Runs without `phases.json` (pre-feature or single-phase): `_load_current_phase_section` returns an empty string, so no injection occurs. `RunState.load()` sets defaults (`current_phase=1`, `total_phases=1`, `phase_advance_pending=False`) for old state files that lack these fields.
+
+### Target Audiences
+
+- **Codex** receives phase docs via prompt injection in `plan-round` and `review-round`. Codex is the sole decision-maker for PHASE_COMPLETE transitions.
+- **The supervisor** reads JSON output from CLI subcommands and orchestrates the round loop. `SKILL.md` is the supervisor's authoritative reference.
+- **Workers** (Task tool subagents) do NOT receive phase documents -- they stay focused on their subtask only.
+
+---
+
+## Examples
+
+### Example 1: 3-Phase Run (Complex Goal)
+
+```
+plan-init
+  -> first Codex call: writes plan.md (3-7 tasks)
+  -> second Codex call: generates 3 phases
+  -> writes phases.json + phases/phase-01.md, phase-02.md, phase-03.md
+  -> state: current_phase=1, total_phases=3
+
+Phase 1 context active (phase-01.md injected each round)
+  Round 1: plan-round -> dispatch -> review-round -> NEEDS_CHANGES
+  Round 2: plan-round -> dispatch -> review-round -> NEEDS_CHANGES
+  Round 3: plan-round -> dispatch -> review-round -> PHASE_COMPLETE
+    -> state: phase_advance_pending=True
+    -> advance-phase: Codex updates phase-02.md with actual results
+    -> state: current_phase=2, phase_advance_pending=False
+    -> announce: "Phase 1 complete -> advancing to Phase 2: 'Core Logic'"
+
+Phase 2 context active (phase-02.md injected each round)
+  Round 4: plan-round -> dispatch -> review-round -> NEEDS_CHANGES
+  Round 5: plan-round -> dispatch -> review-round -> PHASE_COMPLETE
+    -> advance-phase: Codex updates phase-03.md
+    -> state: current_phase=3, phase_advance_pending=False
+    -> announce: "Phase 2 complete -> advancing to Phase 3: 'Integration'"
+
+Phase 3 context active (phase-03.md injected each round)
+  Round 6: plan-round -> dispatch -> review-round -> NEEDS_CHANGES
+  Round 7: plan-round -> dispatch -> review-round -> APPROVE
+    -> finalize -> final-report.md written
+```
+
+### Example 2: Single-Phase Run (Simple Goal)
+
+```
+plan-init
+  -> Codex decides 1 phase is sufficient
+  -> writes phases.json (1 entry) + phases/phase-01.md
+  -> state: current_phase=1, total_phases=1
+
+Phase 1 context active
+  Round 1: plan-round -> dispatch -> review-round -> NEEDS_CHANGES
+  Round 2: plan-round -> dispatch -> review-round -> APPROVE
+    -> finalize (no advance-phase needed)
+```
+
+### Example 3: Resume After Interrupted Phase Transition
+
+```
+Round 3 completes with PHASE_COMPLETE
+  -> state: phase_advance_pending=True, current_phase=1
+  -> process crashes before advance-phase runs
+
+On resume:
+  -> resume.py detects phase_advance_pending=True
+  -> returns action: advance_phase
+  -> supervisor calls advance-phase --run <run_id>
+  -> advance-phase runs normally: updates phase-02.md, current_phase=2, phase_advance_pending=False
+  -> round loop continues from round 4
+```
+
+### Example 4: plan-init with Malformed Phases Response
+
+```
+Codex returns invalid JSON for phases generation
+  -> _parse_phases_response falls back to 1-phase default
+  -> writes phases/phase-01.md with generic content
+  -> state: current_phase=1, total_phases=1
+  -> run proceeds as single-phase (graceful degradation)
+```
+
+---
+
 ## File Map
 
 | File | Change |
 |---|---|
-| `python/agent_loop/run_state.py` | `Decision` type → add `PHASE_COMPLETE`, remove `STOP_FOR_USER`; add `current_phase`, `total_phases`, `phase_advance_pending` fields; backward-compat `load()`; `advance_current_phase()` method |
+| `python/agent_loop/run_state.py` | `Decision` type -> add `PHASE_COMPLETE`, remove `STOP_FOR_USER`; add `current_phase`, `total_phases`, `phase_advance_pending` fields; backward-compat `load()`; `advance_current_phase()` method |
 | `python/agent_loop/cli.py` | New helpers `_parse_phases_response`, `_load_current_phase_section`; extend `_cmd_plan_init`; extend `_cmd_plan_round`; extend `_cmd_review_round`; new `_cmd_advance_phase` + parser entry |
 | `python/agent_loop/resume.py` | Add `advance_phase` to `Action` literal; add `phase_advance_pending` check in `determine_resume_action` |
 | `skills/agent-loop/SKILL.md` | Update round-loop heading, plan-init output description, step-6 decision list, step-7 PHASE_COMPLETE branch; remove STOP_FOR_USER |
 | `skills/agent-loop/safety-rules.md` | Remove STOP_FOR_USER rows; note safety_flags are passed to Codex but no longer force a specific decision |
 | `skills/agent-loop/resume-run.md` | Add `advance_phase` action row; update `branch_decision` description |
-| `python/tests/test_run_state_phase.py` | New — unit tests for new RunState fields |
-| `python/tests/test_plan_init_phases.py` | New — CLI tests for phase generation in plan-init |
-| `python/tests/test_phase_injection.py` | New — unit tests for `_load_current_phase_section` + CLI tests verifying injection |
-| `python/tests/test_cli_advance_phase.py` | New — CLI tests for advance-phase subcommand |
+| `python/tests/test_run_state_phase.py` | New -- unit tests for new RunState fields |
+| `python/tests/test_plan_init_phases.py` | New -- CLI tests for phase generation in plan-init |
+| `python/tests/test_phase_injection.py` | New -- unit tests for `_load_current_phase_section` + CLI tests verifying injection |
+| `python/tests/test_cli_advance_phase.py` | New -- CLI tests for advance-phase subcommand |
 | `python/tests/test_resume.py` | Add `advance_phase` action test |
 | `python/tests/test_cli_plan_round.py` | Update line 742: change `STOP_FOR_USER` stub to `NEEDS_CHANGES` |
 
 ---
 
-### Task 1: RunState — Decision type, phase fields, advance_current_phase
+### Task 1: RunState -- Decision type, phase fields, advance_current_phase
 
 **Files:**
 - Modify: `python/agent_loop/run_state.py`
@@ -264,7 +473,7 @@ cd C:\dev\ClaudeXCodex\python
 pytest tests/ -v
 ```
 
-The `test_run_state.py` tests should still pass (no fields removed). If any test references `STOP_FOR_USER` as a valid `Decision` literal value and fails a type check, note it — it will be cleaned up in Task 4.
+The `test_run_state.py` tests should still pass (no fields removed). If any test references `STOP_FOR_USER` as a valid `Decision` literal value and fails a type check, note it -- it will be cleaned up in Task 4.
 
 - [ ] **Step 6: Commit**
 
@@ -275,7 +484,7 @@ git commit -m "feat(run-state): add phase fields and PHASE_COMPLETE decision"
 
 ---
 
-### Task 2: plan-init — phase generation (second Codex call)
+### Task 2: plan-init -- phase generation (second Codex call)
 
 **Files:**
 - Modify: `python/agent_loop/cli.py` (functions `_parse_phases_response`, `_cmd_plan_init`)
@@ -390,7 +599,7 @@ def test_plan_init_emits_phases_in_json(tmp_repo: Path) -> None:
 
 
 def test_plan_init_single_phase_fallback_on_bad_json(tmp_repo: Path) -> None:
-    """Malformed phases JSON → fallback to 1 phase."""
+    """Malformed phases JSON -> fallback to 1 phase."""
     r1 = _run(["init-run", "--goal", "simple goal", "--slug", "simple"], cwd=tmp_repo)
     run_id = json.loads(r1.stdout)["run_id"]
 
@@ -513,7 +722,7 @@ def _cmd_plan_init(args) -> int:
         '      "phase_n": 1,\n'
         '      "title": "<short phase title>",\n'
         '      "objective": "<one sentence: what this phase achieves>",\n'
-        '      "content": "<full markdown for this phase doc — include: objective, key context, constraints, expected completion criteria, anticipated files/areas. Under 400 words.>"\n'
+        '      "content": "<full markdown for this phase doc -- include: objective, key context, constraints, expected completion criteria, anticipated files/areas. Under 400 words.>"\n'
         '    }\n'
         '  ]\n'
         '}\n\n'
@@ -575,7 +784,7 @@ cd C:\dev\ClaudeXCodex\python
 pytest tests/ -v
 ```
 
-`test_plan_init_writes_plan_md` should still pass — plan.md behavior is unchanged.
+`test_plan_init_writes_plan_md` should still pass -- plan.md behavior is unchanged.
 
 - [ ] **Step 7: Commit**
 
@@ -586,7 +795,7 @@ git commit -m "feat(plan-init): generate phase docs via second Codex call"
 
 ---
 
-### Task 3: plan-round and review-round — inject current phase doc
+### Task 3: plan-round and review-round -- inject current phase doc
 
 **Files:**
 - Modify: `python/agent_loop/cli.py` (add `_load_current_phase_section`, extend `_cmd_plan_round`, extend `_cmd_review_round`)
@@ -721,7 +930,7 @@ def _load_current_phase_section(run_dir: "_Path", current_phase: int) -> str:
     """Load current phase doc and return a formatted prompt section, or empty string.
 
     Returns empty string when phases.json is absent (single-phase / legacy run)
-    or when the phase doc file is missing — so callers need no special-casing.
+    or when the phase doc file is missing -- so callers need no special-casing.
     """
     phases_json_path = run_dir / "phases.json"
     if not phases_json_path.exists():
@@ -788,7 +997,7 @@ git commit -m "feat(plan-round): inject current phase doc into Codex prompt"
 
 ---
 
-### Task 4: review-round — PHASE_COMPLETE decision, remove STOP_FOR_USER
+### Task 4: review-round -- PHASE_COMPLETE decision, remove STOP_FOR_USER
 
 **Files:**
 - Modify: `python/agent_loop/cli.py` (`_cmd_review_round`)
@@ -855,7 +1064,7 @@ def test_review_round_fallback_decision_is_needs_changes(tmp_repo: Path, codex_s
     state["current_round"] = 1
     state_p.write_text(json.dumps(state), encoding="utf-8")
 
-    # No ## Decision section → fallback
+    # No ## Decision section -> fallback
     env = codex_stub("# Codex Review\n\nSome text without a decision section.")
     r = _run(["review-round", "--run", run_id, "--round", "1"], cwd=tmp_repo, env_overrides=env)
     assert r.returncode == 0, r.stderr
@@ -908,7 +1117,7 @@ With:
 "- PHASE_COMPLETE when this phase's objective (from the Current Phase section) is fully achieved and the codebase is ready for the next phase.\n"
 "- APPROVE if the entire run goal is achieved (all phases complete or goal fully satisfied).\n"
 "- NEEDS_CHANGES otherwise (default).\n"
-"Safety flags (if any) are informational — Codex decides the appropriate decision.\n"
+"Safety flags (if any) are informational -- Codex decides the appropriate decision.\n"
 ```
 
 Add phase section in `meta_prompt` after the payload block:
@@ -1108,7 +1317,7 @@ def test_advance_phase_emits_is_last_phase_when_on_last(tmp_repo: Path) -> None:
     state["phase_advance_pending"] = True
     (run_dir / "state.json").write_text(json.dumps(state), encoding="utf-8")
 
-    # No codex stub needed — should return is_last_phase without calling Codex
+    # No codex stub needed -- should return is_last_phase without calling Codex
     env = {"AGENT_LOOP_CODEX_BIN": str(tmp_repo / "nonexistent-codex")}
     r = _run(["advance-phase", "--run", run_id], cwd=tmp_repo, env_overrides=env)
     assert r.returncode == 0, r.stderr
@@ -1254,7 +1463,7 @@ git commit -m "feat(advance-phase): new CLI subcommand for phase transitions"
 
 ---
 
-### Task 6: resume.py — add advance_phase action
+### Task 6: resume.py -- add advance_phase action
 
 **Files:**
 - Modify: `python/agent_loop/resume.py`
@@ -1372,28 +1581,28 @@ Make these targeted changes:
 **1b.** On start step 2: update plan-init output description to mention phases:
 ```
 2. `Bash: "${CLAUDE_PLUGIN_ROOT}/bin/agent-loop" plan-init --run <run_id>`
-   → JSON `{plan_path, phases, summary}`. (Codex drafted plan.md and phase docs on disk.)
+   -> JSON `{plan_path, phases, summary}`. (Codex drafted plan.md and phase docs on disk.)
 ```
 
 **1c.** Review-round step 6: update decision description:
 ```
 6. After Task tool returns, run: `Bash: "${CLAUDE_PLUGIN_ROOT}/bin/agent-loop" review-round --run <run_id> --round N`
-   → JSON `{decision, current_phase, review_path, safety_flags, memo_appended, memo_path}`. Decision is one of APPROVE / NEEDS_CHANGES / PHASE_COMPLETE.
+   -> JSON `{decision, current_phase, review_path, safety_flags, memo_appended, memo_path}`. Decision is one of APPROVE / NEEDS_CHANGES / PHASE_COMPLETE.
 ```
 
 **1d.** Step 7 decision branch: replace STOP_FOR_USER with PHASE_COMPLETE:
 ```
 7. Branch on `decision`:
-   - `APPROVE` →
+   - `APPROVE` ->
      1. If `commit_on_approve` is `true`: `Bash: git add -A && git commit -m "<commit_message>"`. Show commit hash.
      2. `Bash: "${CLAUDE_PLUGIN_ROOT}/bin/agent-loop" finalize --run <run_id>`. Tell user run completed; point at `final-report.md`. END.
-   - `PHASE_COMPLETE` →
+   - `PHASE_COMPLETE` ->
      1. `Bash: "${CLAUDE_PLUGIN_ROOT}/bin/agent-loop" advance-phase --run <run_id>`
-        → JSON `{previous_phase, current_phase, updated_doc, is_last_phase}`.
+        -> JSON `{previous_phase, current_phase, updated_doc, is_last_phase}`.
      2. If `is_last_phase` is `true`: call finalize (step above). END.
-     3. Announce: `Phase <previous_phase> complete → advancing to Phase <current_phase>: "<title from phases.json>"`.
+     3. Announce: `Phase <previous_phase> complete -> advancing to Phase <current_phase>: "<title from phases.json>"`.
      4. Loop back to step 1 (next round in new phase).
-   - `NEEDS_CHANGES` → Loop back to step 1 (next round).
+   - `NEEDS_CHANGES` -> Loop back to step 1 (next round).
 ```
 
 **1e.** Remove the `STOP_FOR_USER` bullet entirely.
@@ -1411,7 +1620,7 @@ Replace the Supervisor reaction matrix section:
 | `PHASE_COMPLETE` | Call `"${CLAUDE_PLUGIN_ROOT}/bin/agent-loop" advance-phase`. If `is_last_phase` true, then finalize. |
 | `NEEDS_CHANGES` | Next round. |
 
-`safety_flags` (if any) are passed to Codex in the review payload — Codex decides the appropriate decision. The supervisor does not override Codex's decision based on flags.
+`safety_flags` (if any) are passed to Codex in the review payload -- Codex decides the appropriate decision. The supervisor does not override Codex's decision based on flags.
 ```
 
 Remove the old `STOP_FOR_USER` rows and the "defense in depth" note.
