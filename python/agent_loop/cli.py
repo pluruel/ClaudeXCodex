@@ -1085,6 +1085,8 @@ Commit decision rules:
     subtasks = round_plan.get("subtasks", [])
     _emit({
         "round_n": next_n,
+        "current_phase": rs.current_phase,
+        "total_phases": rs.total_phases,
         "prompt_path": str(rd / "claude-prompt.md"),
         "round_plan_path": str(round_plan_path),
         "worker_model": round_plan["worker_model"],
@@ -1346,6 +1348,11 @@ Note: safety_flags in the payload are informational context. Use them to inform 
     rs.save(run_dir / "state.json")
 
     memo_fields = _parse_review_fields(res.final_text)
+    import re as _re_sev
+    severity_counts = {"high": 0, "med": 0, "low": 0}
+    for _m in _re_sev.finditer(r"\[severity:\s*(high|med|low)\]", res.final_text, _re_sev.IGNORECASE):
+        _key = _m.group(1).lower()
+        severity_counts[_key] = severity_counts.get(_key, 0) + 1
     memo_block = _compose_memo_block(
         round_n=args.round,
         decision=decision,
@@ -1374,6 +1381,8 @@ Note: safety_flags in the payload are informational context. Use them to inform 
         "memo_path": str(memo_path),
         "artifact_mode": artifact_mode,
         "artifacts_removed": artifacts_removed,
+        "severity_counts": severity_counts,
+        "carry_forward": memo_fields["carry_forward"],
     })
     return 0
 

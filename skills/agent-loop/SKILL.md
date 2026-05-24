@@ -160,13 +160,13 @@ unchanged from the original SKILL.md.
 For each round N (starting at 1):
 
 1. `Bash: "${CLAUDE_PLUGIN_ROOT}/bin/agent-loop" plan-round --run <run_id>`
-   → JSON `{round_n, prompt_path, round_plan_path, worker_model, worker_model_reason, reasoning_effort, summary}`. (Codex drafted the worker prompt and selected the worker model; the CLI normalized the selection and injected a `## Worker Model` section into the prompt.)
+   → JSON `{round_n, current_phase, total_phases, prompt_path, round_plan_path, worker_model, worker_model_reason, reasoning_effort, summary}`. (Codex drafted the worker prompt and selected the worker model; the CLI normalized the selection and injected a `## Worker Model` section into the prompt.)
 2. `Bash: "${CLAUDE_PLUGIN_ROOT}/bin/agent-loop" capture-baseline`
    → JSON `{baseline}`. Save the sha.
 3. **Announce the round to the user** (one line, verbatim format, BEFORE dispatch):
 
    ```
-   Round N — worker (dominant): <worker_model> (<worker_model_reason>), effort: <reasoning_effort> — subtasks: <count> (analysis×<a>, implementation×<i>, verification×<v>)
+   Phase <current_phase>/<total_phases> · Round N — worker (dominant): <worker_model> (<worker_model_reason>), effort: <reasoning_effort> — subtasks: <count> (analysis×<a>, implementation×<i>, verification×<v>)
    ```
 
    Use the values returned by `plan-round` in step 1. Count each role from the
@@ -389,7 +389,7 @@ For each round N (starting at 1):
    ```
 
 6. After Task tool returns, run: `Bash: "${CLAUDE_PLUGIN_ROOT}/bin/agent-loop" review-round --run <run_id> --round N`
-   → JSON `{decision, current_phase, review_path, safety_flags, memo_appended, memo_path}`. Decision is one of APPROVE / NEEDS_CHANGES / PHASE_COMPLETE. `review-round` automatically parses the Codex review and appends the round memo to `memo.md`; do not call `append-memo` yourself.
+   → JSON `{decision, current_phase, review_path, safety_flags, severity_counts, carry_forward, memo_appended, memo_path}`. Decision is one of APPROVE / NEEDS_CHANGES / PHASE_COMPLETE. `review-round` automatically parses the Codex review and appends the round memo to `memo.md`; do not call `append-memo` yourself.
 7. Branch on `decision`:
    - `APPROVE` →
      1. If `commit_on_approve` is `true` (from `plan-round` step 1 JSON): `Bash: git add -A && git commit -m "<commit_message>"`. Show the commit hash to the user.
@@ -400,7 +400,14 @@ For each round N (starting at 1):
      2. If `is_last_phase` is `true`: call finalize (step above). END.
      3. Announce: `Phase <previous_phase> complete -> advancing to Phase <current_phase>: "<title from phases.json>"`.
      4. Loop back to step 1 (next round in new phase).
-   - `NEEDS_CHANGES` → Loop back to step 1 (next round).
+   - `NEEDS_CHANGES` →
+     **Supervisor override check** (skip next round only if ALL hold):
+     1. `safety_flags` is empty
+     2. `severity_counts.high == 0`
+     3. Every item in `carry_forward` contains only minor-signal words: "style", "nit", "minor", "optional", "cosmetic", "formatting"
+
+     If all three hold → treat as PHASE_COMPLETE: call `advance-phase` (or `finalize` if last phase).
+     Otherwise → loop back to step 1 (next round).
 
 ## On continue (`/ClaudeXCodex:agent-loop` or `/ClaudeXCodex:agent-loop continue`)
 

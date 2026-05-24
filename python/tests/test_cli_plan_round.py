@@ -1059,3 +1059,26 @@ def test_parse_round_plan_merged_envelope_both_fields() -> None:
 
     # Not a parse failure
     assert result.get("parse_failed") is False
+
+
+def test_plan_round_emits_phase_fields(tmp_repo: Path) -> None:
+    """plan-round JSON output must include current_phase and total_phases fields."""
+    r1 = _run(["init-run", "--goal", "g", "--slug", "s"], cwd=tmp_repo)
+    assert r1.returncode == 0, r1.stderr
+    run_id = json.loads(r1.stdout)["run_id"]
+    plan = tmp_repo / ".agent-loop" / "runs" / run_id / "plan.md"
+    plan.write_text("# Plan\n\n## Tasks\n1. [ ] do A\n", encoding="utf-8")
+
+    env = _codex_stub_sequence(tmp_repo, [
+        _merged_envelope(
+            round_n=1, worker_model="haiku", reason="mechanical",
+            reasoning_effort="low", task_description="Implement A",
+        ),
+    ])
+    r = _run(["plan-round", "--run", run_id], cwd=tmp_repo, env_overrides=env)
+    assert r.returncode == 0, r.stderr
+    js = json.loads(r.stdout)
+    assert "current_phase" in js, f"current_phase missing from plan-round output: {js}"
+    assert "total_phases" in js, f"total_phases missing from plan-round output: {js}"
+    assert js["current_phase"] == 1
+    assert js["total_phases"] == 1

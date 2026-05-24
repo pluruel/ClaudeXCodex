@@ -121,3 +121,5 @@ to execution.
 - Do not insert `authorized: CLAUDE_X_CODEX_PLAN` before the user confirms.
 - Do not run `plan-round` or dispatch workers **before the user confirms**. After confirmation, you continue as supervisor and follow the agent-loop round loop directly.
 - Do not commit, push, or delete files.
+- **Do not edit any source files, configs, or skills while a planning conversation is in progress.** Keep all changes — even small ones discussed during planning — staged until the user explicitly confirms the plan. "Looks good" or "the proposal is nice" is interest, not a confirmation.
+- **Do not invoke superpowers:writing-plans, superpowers:brainstorming, or any other external planning skill while this skill is active.** /ClaudeXCodex:plan is itself the planning process — routing to a superpowers skill creates a nested conflict where structured docs get generated outside the conversation flow.
