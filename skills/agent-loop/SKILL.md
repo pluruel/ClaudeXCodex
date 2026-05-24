@@ -337,8 +337,13 @@ For each round N (starting at 1):
 
        Deliverable (includes named check command): <subtask.deliverable>
 
-       After all commands finish, write ONE LINE to .../rounds/NN/progress.md:
-         [done] <subtask.id> verification: <pass|fail>
+       After all commands finish:
+       1. APPEND to `shared/test-results.md` under heading `## <subtask.id>`:
+          Status: PASS|FAIL
+          <failure details if FAIL>
+          (Sequential depends_on ensures no parallel write conflicts.)
+       2. Write ONE LINE to .../rounds/NN/progress.md:
+          [done] <subtask.id> verification: <pass|fail>
 
        Reply with EXACTLY ONE LINE:
          OK

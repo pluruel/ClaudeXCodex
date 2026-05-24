@@ -969,6 +969,14 @@ Subtask rules:
   over the analysis ids they rely on.
 - verification subtasks: MUST NOT edit source files. Must name an exact check command
   in the deliverable. Dispatched after all implementation subtasks complete.
+  If multiple verification subtasks exist, each must declare `depends_on` over ALL
+  preceding verification subtask ids to ensure sequential execution.
+  Each verification subtask MUST append its results to `shared/test-results.md`
+  under a `## <subtask_id>` heading:
+    ## <subtask_id>
+    Status: PASS|FAIL
+    <failure details if FAIL>
+  Sequential execution guarantees no parallel write conflicts.
 - Each subtask required_reading is capped at 5 paths; split the subtask if more are needed.
 - opus subtasks require justification in the description.
 
