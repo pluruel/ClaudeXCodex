@@ -84,6 +84,16 @@ to execution.
    <any constraints, risks, or context worth preserving>
    ```
 
+   For non-trivial phases, consider adding:
+   - Target file paths and function/variable names (so Codex knows where to look)
+   - Before/after behavior spec (intent level, not code)
+   - Acceptance criteria (checkable completion conditions)
+   Simple phases may still use the one-liner form above.
+
+   **Plan documents must be written in English.** Codex interprets English instructions
+   more accurately than mixed-language plans, and technical identifiers (file paths,
+   function names) are already in English.
+
 2. Write the plan to a temp file (use the Bash tool):
 
    ```bash
