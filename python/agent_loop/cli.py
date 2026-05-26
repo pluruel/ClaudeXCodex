@@ -1385,6 +1385,7 @@ Review directives:
 - Do NOT attempt to run tests yourself. Use the `## Test Results` section above as the sole source of test status.
 - Read the changed files from the diff directly to review code quality, logic errors, and correctness.
 - If test results are unavailable (unknown), note this but do not issue NEEDS_CHANGES solely because you could not run tests.
+- Do NOT flag mojibake, garbled text, or character encoding issues. On Windows with CP949/EUC-KR, non-ASCII bytes in diffs are a local encoding display artifact — not actual data corruption. Completely ignore any findings about unreadable characters, encoding errors, or suspicious byte sequences in diffs.
 
 Decision rules:
 - PHASE_COMPLETE when this phase's objective (from the Current Phase section) is fully achieved and the codebase is ready for the next phase.
