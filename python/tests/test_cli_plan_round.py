@@ -1161,3 +1161,48 @@ def test_plan_round_consecutive_needs_changes_none_decision_skipped() -> None:
     ])
     # All None -> count == 0
     assert _count_consecutive_needs_changes(rs2) == 0
+
+
+def test_plan_round_emits_phase_complete_signal_true(tmp_repo: Path, codex_stub) -> None:
+    r1 = _run(["init-run", "--goal", "g", "--slug", "s"], cwd=tmp_repo)
+    run_id = json.loads(r1.stdout)["run_id"]
+    _run(["plan-init", "--run", run_id], cwd=tmp_repo,
+         env_overrides=_codex_stub_sequence(tmp_repo, [
+             json.dumps({"phases": [{"phase_n": 1, "title": "T", "objective": "O", "content": "C"}]}),
+         ]))
+
+    envelope = {
+        "round_plan": {
+            "round": 1, "worker_model": "haiku", "worker_model_reason": "simple",
+            "reasoning_effort": "low", "phase_complete_signal": True, "subtasks": [],
+        },
+        "task_description": "do x", "execution_plan_bullets": [], "acceptance_criteria": [], "carry_forward": "",
+    }
+    env = codex_stub(json.dumps(envelope))
+    r = _run(["plan-round", "--run", run_id], cwd=tmp_repo, env_overrides=env)
+    assert r.returncode == 0, r.stderr
+    js = json.loads(r.stdout)
+    assert js["phase_complete_signal"] is True
+
+
+def test_plan_round_phase_complete_signal_defaults_false(tmp_repo: Path, codex_stub) -> None:
+    r1 = _run(["init-run", "--goal", "g", "--slug", "s"], cwd=tmp_repo)
+    run_id = json.loads(r1.stdout)["run_id"]
+    _run(["plan-init", "--run", run_id], cwd=tmp_repo,
+         env_overrides=_codex_stub_sequence(tmp_repo, [
+             json.dumps({"phases": [{"phase_n": 1, "title": "T", "objective": "O", "content": "C"}]}),
+         ]))
+
+    # Codex returns envelope without phase_complete_signal
+    envelope = {
+        "round_plan": {
+            "round": 1, "worker_model": "haiku", "worker_model_reason": "simple",
+            "reasoning_effort": "low", "subtasks": [],
+        },
+        "task_description": "do x", "execution_plan_bullets": [], "acceptance_criteria": [], "carry_forward": "",
+    }
+    env = codex_stub(json.dumps(envelope))
+    r = _run(["plan-round", "--run", run_id], cwd=tmp_repo, env_overrides=env)
+    assert r.returncode == 0, r.stderr
+    js = json.loads(r.stdout)
+    assert js["phase_complete_signal"] is False

@@ -538,6 +538,8 @@ def _parse_round_plan(raw: str, *, round_n: int, allowed_models: list[str],
         "commit_message": str(plan.get("commit_message", "")).strip(),
         # B1: parse failure flag — True when the raw JSON was malformed or non-dict.
         "parse_failed": parse_failed,
+        # phase_complete_signal: True when Codex signals the current phase is done.
+        "phase_complete_signal": bool(plan.get("phase_complete_signal")) if plan.get("phase_complete_signal") is not None else False,
     }
 
 
@@ -957,7 +959,7 @@ Output ONLY JSON with this schema:
         "deliverable": "<what this subtask must produce>"
       }}
     ],
-    "commit_message": "<Conventional Commits one-liner, or empty string if nothing shippable>"
+    "phase_complete_signal": true
   }},
   "task_description": "<one paragraph describing what the worker must accomplish this round>",
   "execution_plan_bullets": [
@@ -1139,6 +1141,7 @@ If `reasoning_effort` is unclear, prefer `{default_effort}`.
         "subtasks": subtasks,
         "subtask_count": len(subtasks),
         "commit_message": round_plan["commit_message"],
+        "phase_complete_signal": round_plan["phase_complete_signal"],
         "summary": f"round {next_n} prompt drafted",
     })
     return 0
