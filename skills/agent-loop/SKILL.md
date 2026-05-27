@@ -72,7 +72,7 @@ When `subtasks` is present and valid, the round is decomposed into typed subtask
 | role | authority | parallelism | constraint |
 |---|---|---|---|
 | `implementation` | patch source files, tests, configs | dispatched sequentially in depends_on order | must NOT write to `shared/*` as scratch; only `decisions.md`, `knowledge.md`, `open-questions.md` |
-| `verification` | run named test commands only (no state checking); report pass/fail | dispatched after all implementation subtasks in this round complete | must name an explicit command in its deliverable |
+| `verification` | run named test commands, lint commands, and `git status`/`git diff --stat`; report pass/fail | dispatched after all implementation subtasks in this round complete | must name an explicit command in its deliverable |
 
 Each subtask carries:
 - `id` — unique within the round
@@ -257,9 +257,9 @@ For each round N (starting at 1):
 
    Wait for ALL implementation Task tool calls to return before Phase 2.
 
-   **Phase 2 — Verification (test-only):**
+   **Phase 2 — Verification:**
    Collect all subtasks with `role: verification`. Each verification subtask must
-   name an explicit test command in its `deliverable`. Per-subtask prompt:
+   name explicit commands in its `deliverable`. Per-subtask prompt:
 
    ```
    Task tool (general-purpose):
@@ -272,9 +272,10 @@ For each round N (starting at 1):
 
        Strict role rules:
        - You are a VERIFICATION subtask. You MUST NOT edit source files. Run ONLY
-         the named test commands specified in your deliverable. Do NOT check
-         implementation state or read non-test files. Report pass/fail and
-         captured output.
+         the commands specified in your deliverable: test commands, lint commands
+         (e.g. eslint, ruff, mypy, tsc --noEmit), and `git status`/`git diff --stat`.
+         Do NOT run grep, file searches, or read arbitrary source files. Report
+         pass/fail and captured output.
        - Append progress to .../rounds/NN/progress.md.
 
        Deliverable (includes named check command): <subtask.deliverable>
@@ -304,6 +305,7 @@ For each round N (starting at 1):
    - **Any verification FAIL found** → Do NOT call `review-round`. Read the failure summary from `shared/test-results.md` (first 30 lines). Judge:
      - If tests fail because implementation logic is wrong → dispatch a re-implementation worker (next round).
      - If tests fail because test cases themselves are broken or incomplete → dispatch a test-fix worker (next round), which may edit test files.
+     - If lint or type checks fail → dispatch a re-implementation worker (next round) with the lint error output as context.
      Escalate to user only for planning-level issues (not fixable by code changes).
 
    - **All verification PASS (or no verification subtask)** →
