@@ -152,6 +152,12 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--run", required=True)
     p.add_argument("--phase", type=int, required=True)
 
+    # phase-commit
+    p = sub.add_parser("phase-commit", help="commit the current phase boundary and record sha in state.json")
+    _add_common(p)
+    p.add_argument("--run", required=True)
+    p.add_argument("--phase", type=int, required=True)
+
     return parser
 
 
@@ -559,6 +565,132 @@ def _single_phase_fallback() -> list[dict]:
     }]
 
 
+def _validate_phase_specs(specs: list[dict], repo: "_Path") -> list[str]:
+    """Validate parsed phase spec list against schema and file-existence rules.
+
+    Returns a list of error strings. Empty list means all specs are valid.
+    Each phase entry must have:
+      - non-empty 'title', 'objective'
+      - non-empty 'target_files' list of repo-relative POSIX paths (no leading /, no ..)
+      - each target_files entry must exist in the repo
+      - non-empty 'acceptance_criteria' list with at least one runnable-command pattern
+    """
+    _RUNNABLE_PATTERNS = [
+        "pytest ", "python -m ", "python ", "grep ", "npm ", "node ",
+        "go test", "cargo ",
+    ]
+    errors: list[str] = []
+    for ph in specs:
+        if not isinstance(ph, dict):
+            errors.append("phase entry is not a dict")
+            continue
+        n = ph.get("phase_n", "?")
+
+        # Required string fields
+        title = ph.get("title", "")
+        if not (isinstance(title, str) and title.strip()):
+            errors.append(f"phase {n}: 'title' is missing or empty")
+
+        objective = ph.get("objective", "")
+        if not (isinstance(objective, str) and objective.strip()):
+            errors.append(f"phase {n}: 'objective' is missing or empty")
+
+        # target_files
+        tf = ph.get("target_files")
+        if not isinstance(tf, list) or not tf:
+            errors.append(f"phase {n}: 'target_files' must be a non-empty list")
+        else:
+            for path_str in tf:
+                if not isinstance(path_str, str) or not path_str.strip():
+                    errors.append(f"phase {n}: target_files entry is not a non-empty string")
+                    continue
+                if path_str.startswith("/") or path_str.startswith("\\"):
+                    errors.append(f"phase {n}: target_files entry {path_str!r} must not be an absolute path")
+                    continue
+                if ".." in path_str.split("/") or ".." in path_str.split("\\"):
+                    errors.append(f"phase {n}: target_files entry {path_str!r} must not contain '..'")
+                    continue
+                if not (repo / path_str).exists():
+                    errors.append(f"phase {n}: target_files entry {path_str!r} not found in repo")
+
+        # acceptance_criteria
+        ac = ph.get("acceptance_criteria")
+        if not isinstance(ac, list) or not ac:
+            errors.append(f"phase {n}: 'acceptance_criteria' must be a non-empty list")
+        else:
+            has_runnable = any(
+                any(pat in bullet for pat in _RUNNABLE_PATTERNS)
+                or (isinstance(bullet, str) and bullet.strip().startswith("$ "))
+                for bullet in ac
+                if isinstance(bullet, str)
+            )
+            if not has_runnable:
+                errors.append(
+                    f"phase {n}: 'acceptance_criteria' must contain at least one runnable-command pattern "
+                    f"(e.g. 'pytest ', 'python -m ', 'grep ', '$ ...', etc.)"
+                )
+
+        # testing dict (soft check — just presence)
+        testing = ph.get("testing")
+        if not isinstance(testing, dict):
+            errors.append(f"phase {n}: 'testing' must be a dict with 'command' and 'expected'")
+        else:
+            if not testing.get("command"):
+                errors.append(f"phase {n}: 'testing.command' is missing or empty")
+            if not testing.get("expected"):
+                errors.append(f"phase {n}: 'testing.expected' is missing or empty")
+
+    return errors
+
+
+def _assemble_phase_doc(spec: dict) -> str:
+    """Assemble a phase markdown document from a validated phase spec dict.
+
+    Returns markdown with the six required headings in fixed order:
+    ## Objective, ## Target Files, ## Acceptance Criteria, ## Testing,
+    ## Out of Scope, ## Notes.
+
+    Uses the literal string '(none)' when a field is empty.
+    """
+    n = spec.get("phase_n", "?")
+    title = spec.get("title", f"Phase {n}")
+    objective = spec.get("objective", "(none)") or "(none)"
+
+    tf = spec.get("target_files", [])
+    if isinstance(tf, list) and tf:
+        tf_block = "\n".join(f"- {p}" for p in tf)
+    else:
+        tf_block = "- (none)"
+
+    ac = spec.get("acceptance_criteria", [])
+    if isinstance(ac, list) and ac:
+        ac_block = "\n".join(f"- {bullet}" for bullet in ac)
+    else:
+        ac_block = "- (none)"
+
+    testing = spec.get("testing") or {}
+    cmd = testing.get("command", "(none)") or "(none)"
+    expected = testing.get("expected", "(none)") or "(none)"
+
+    oos = spec.get("out_of_scope", [])
+    if isinstance(oos, list) and oos:
+        oos_block = "\n".join(f"- {item}" for item in oos)
+    else:
+        oos_block = "- (none)"
+
+    notes = spec.get("notes", "(none)") or "(none)"
+
+    return (
+        f"# Phase {n}: {title}\n\n"
+        f"## Objective\n{objective}\n\n"
+        f"## Target Files\n{tf_block}\n\n"
+        f"## Acceptance Criteria\n{ac_block}\n\n"
+        f"## Testing\n- Command: `{cmd}`\n- Expected: {expected}\n\n"
+        f"## Out of Scope\n{oos_block}\n\n"
+        f"## Notes\n{notes}\n"
+    )
+
+
 def _parse_phases_response(raw: str) -> list[dict]:
     """Parse Codex phase-generation output into normalized phase dicts.
 
@@ -815,55 +947,219 @@ def _cmd_plan_init(args) -> int:
         plan_path.write_text(plan_text, encoding="utf-8")
         plan_source = "codex"
 
-    # Second Codex call: generate phase docs.
+    # Run scout BEFORE asking Codex to draft phases.
+    # Derive keywords from the plan text: capitalized identifiers and path-like strings.
+    import re as _re_kw
+    _kw_candidates: list[str] = []
+    # path-like strings (contain / or .)
+    _kw_candidates += _re_kw.findall(r"[\w._/-]{3,}/[\w._/-]+", plan_text)
+    # capitalized identifiers (CamelCase or ALL_CAPS)
+    _kw_candidates += _re_kw.findall(r"\b[A-Z][A-Za-z0-9_]{2,}\b", plan_text)
+    # deduplicate, lowercase, cap to 6
+    _seen_kw: set[str] = set()
+    _keywords: list[str] = []
+    for _kw in _kw_candidates:
+        _lkw = _kw.lower()
+        if _lkw not in _seen_kw:
+            _seen_kw.add(_lkw)
+            _keywords.append(_kw.lower())
+        if len(_keywords) >= 6:
+            break
+    if not _keywords:
+        _keywords = ["main"]
+
+    scout_signal = {"file_tree": [], "grep_hits": [], "headers": []}
+    try:
+        from agent_loop.scout import scout as _scout
+        _scout_rep = _scout(repo, goal=goal, keywords=_keywords, max_files=200)
+        scout_signal = {
+            "file_tree": _scout_rep.file_tree,
+            "grep_hits": _scout_rep.grep_hits,
+            "headers": _scout_rep.headers,
+        }
+    except Exception:
+        pass  # Fall back to empty signal; do not abort plan-init
+
+    # Build the strict JSON phases prompt.
+    _scout_file_tree_str = "\n".join(scout_signal["file_tree"][:80]) or "(none)"
+    _scout_grep_hits_str = _json.dumps(scout_signal["grep_hits"][:40], indent=2) if scout_signal["grep_hits"] else "(none)"
+    _scout_headers_str = _json.dumps(scout_signal["headers"][:20], indent=2) if scout_signal["headers"] else "(none)"
+
     phases_prompt = (
         "You are generating a phased implementation plan for a software development goal.\n\n"
+        "IMPORTANT: Before populating 'target_files' for each phase, you MUST read at least 3 real "
+        "source files in the repository. Use the Repo Signal below as a starting point, then open "
+        "the actual files. Only cite repo-relative paths that genuinely exist in the repository.\n\n"
         "Analyze the goal complexity and decide how many phases (1-5):\n"
         "- 1 phase: simple goal, achievable in 3-7 rounds total\n"
         "- 2-3 phases: moderate complexity with distinct milestones\n"
         "- 4-5 phases: large goal with multiple independent subsystems\n\n"
-        'Output ONLY JSON (no prose, no fenced block):\n'
+        "Output ONLY JSON (no prose, no fenced block) matching this schema EXACTLY:\n"
         '{\n'
         '  "phases": [\n'
         '    {\n'
         '      "phase_n": 1,\n'
         '      "title": "<short phase title>",\n'
         '      "objective": "<one sentence: what this phase achieves>",\n'
-        '      "content": "<full markdown for this phase doc -- include: objective, key context, constraints, expected completion criteria, anticipated files/areas. Under 400 words.>"\n'
+        '      "scope_hint": "<one line: file paths, area of code, or domain hint>",\n'
+        '      "target_files": ["<repo-relative POSIX path>", ...],\n'
+        '      "acceptance_criteria": ["<criterion including a runnable command like pytest ... or grep ...>", ...],\n'
+        '      "testing": {"command": "<runnable test command>", "expected": "<expected outcome>"},\n'
+        '      "out_of_scope": ["<what this phase explicitly does NOT cover>"],\n'
+        '      "notes": "<any constraints or context>"\n'
         '    }\n'
         '  ]\n'
         '}\n\n'
+        "Rules:\n"
+        "- 'target_files' MUST be repo-relative POSIX paths (no leading /, no ..).\n"
+        "- Every path in 'target_files' MUST exist in the repository.\n"
+        "- 'acceptance_criteria' MUST include at least one runnable command "
+        "(e.g. 'pytest path/to/test.py', 'python -m ...', 'grep ...', or a line starting with '$ ...').\n\n"
         f"## Goal\n{goal}\n\n"
-        f"## Plan (tasks overview)\n{plan_text}\n"
+        f"## Plan (tasks overview)\n{plan_text}\n\n"
+        "## Repo Signal\n\n"
+        f"### file_tree\n{_scout_file_tree_str}\n\n"
+        f"### grep_hits\n{_scout_grep_hits_str}\n\n"
+        f"### headers\n{_scout_headers_str}\n"
     )
+
     try:
         phases_res = call_codex(phases_prompt)
     except CodexCallError as e:
         print(f"codex error: {e}", file=sys.stderr)
         return 1
 
-    phases = _parse_phases_response(phases_res.final_text)
+    # Try to parse the strict JSON response.
+    _phases_text = phases_res.final_text.strip()
+    if _phases_text.startswith("```"):
+        _phases_text = _re_kw.sub(r"^```(?:json)?\s*", "", _phases_text)
+        _phases_text = _re_kw.sub(r"\s*```$", "", _phases_text).strip()
+    _parsed_strict: dict | None = None
+    try:
+        _parsed_strict = _json.loads(_phases_text)
+        if not isinstance(_parsed_strict, dict):
+            _parsed_strict = None
+    except _json.JSONDecodeError:
+        _parsed_strict = None
 
-    # Write phase docs and index.
-    phases_dir = run_dir / "phases"
-    phases_dir.mkdir(exist_ok=True)
-    phases_index = []
-    for ph in phases:
-        doc_path = phases_dir / f"phase-{ph['phase_n']:02d}.md"
-        doc_path.write_text(ph["content"], encoding="utf-8")
-        phases_index.append({
-            "phase_n": ph["phase_n"],
-            "title": ph["title"],
-            "objective": ph["objective"],
-            "doc_path": f"phases/phase-{ph['phase_n']:02d}.md",
-        })
+    phase_validation_errors: list[str] = []
+
+    if _parsed_strict is not None and isinstance(_parsed_strict.get("phases"), list):
+        # Validate the parsed specs.
+        _specs = _parsed_strict["phases"]
+        phase_validation_errors = _validate_phase_specs(_specs, repo)
+
+        if phase_validation_errors:
+            # Re-invoke Codex ONCE with a rejected preamble.
+            _retry_prompt = (
+                "Your previous response was rejected for the following reasons:\n"
+                + "\n".join(f"- {e}" for e in phase_validation_errors)
+                + "\nReturn corrected JSON matching the schema exactly.\n\n"
+                + phases_prompt
+            )
+            try:
+                _retry_res = call_codex(_retry_prompt)
+                _retry_text = _retry_res.final_text.strip()
+                if _retry_text.startswith("```"):
+                    _retry_text = _re_kw.sub(r"^```(?:json)?\s*", "", _retry_text)
+                    _retry_text = _re_kw.sub(r"\s*```$", "", _retry_text).strip()
+                _retry_parsed: dict | None = None
+                try:
+                    _retry_parsed = _json.loads(_retry_text)
+                    if not isinstance(_retry_parsed, dict):
+                        _retry_parsed = None
+                except _json.JSONDecodeError:
+                    _retry_parsed = None
+
+                if _retry_parsed is not None and isinstance(_retry_parsed.get("phases"), list):
+                    _retry_specs = _retry_parsed["phases"]
+                    _retry_errors = _validate_phase_specs(_retry_specs, repo)
+                    phase_validation_errors = _retry_errors
+                    _parsed_strict = _retry_parsed
+                    _specs = _retry_specs
+                # If retry parse failed, keep original _parsed_strict and errors
+            except CodexCallError:
+                pass  # Keep original _parsed_strict, errors persist
+
+        # Assemble phase docs from JSON specs.
+        # Filter out invalid target_files paths to avoid doc linking nonexistent files.
+        _normalized_specs: list[dict] = []
+        for _spec in _parsed_strict.get("phases", []):
+            if not isinstance(_spec, dict):
+                continue
+            _spec = dict(_spec)
+            _tf = _spec.get("target_files", [])
+            if isinstance(_tf, list):
+                _spec["target_files"] = [
+                    p for p in _tf
+                    if isinstance(p, str) and p.strip()
+                    and not p.startswith("/")
+                    and ".." not in p.split("/")
+                    and (repo / p).exists()
+                ]
+            _normalized_specs.append(_spec)
+
+        # Sort and re-number
+        _normalized_specs.sort(key=lambda s: s.get("phase_n", 999))
+        _normalized_specs = _normalized_specs[:5]
+        for _new_n, _spec in enumerate(_normalized_specs, start=1):
+            _spec["phase_n"] = _new_n
+
+        phases_dir = run_dir / "phases"
+        phases_dir.mkdir(exist_ok=True)
+        phases_index = []
+        for _spec in _normalized_specs:
+            _ph_n = _spec["phase_n"]
+            _title = str(_spec.get("title", f"Phase {_ph_n}")).strip()
+            _objective = str(_spec.get("objective", "")).strip()
+            _doc_content = _assemble_phase_doc(_spec)
+            _doc_path = phases_dir / f"phase-{_ph_n:02d}.md"
+            _doc_path.write_text(_doc_content, encoding="utf-8")
+            phases_index.append({
+                "phase_n": _ph_n,
+                "title": _title,
+                "objective": _objective,
+                "doc_path": f"phases/phase-{_ph_n:02d}.md",
+            })
+
+        if not phases_index:
+            # All specs were invalid; fall back to single phase
+            _fb = _single_phase_fallback()
+            phases_index = []
+            phases_dir.mkdir(exist_ok=True)
+            for _fbph in _fb:
+                _doc_path = phases_dir / f"phase-{_fbph['phase_n']:02d}.md"
+                _doc_path.write_text(_fbph["content"], encoding="utf-8")
+                phases_index.append({
+                    "phase_n": _fbph["phase_n"],
+                    "title": _fbph["title"],
+                    "objective": _fbph["objective"],
+                    "doc_path": f"phases/phase-{_fbph['phase_n']:02d}.md",
+                })
+
+    else:
+        # JSON parse failed entirely — fall back to the legacy markdown path.
+        phases = _parse_phases_response(phases_res.final_text)
+        phases_dir = run_dir / "phases"
+        phases_dir.mkdir(exist_ok=True)
+        phases_index = []
+        for ph in phases:
+            doc_path = phases_dir / f"phase-{ph['phase_n']:02d}.md"
+            doc_path.write_text(ph["content"], encoding="utf-8")
+            phases_index.append({
+                "phase_n": ph["phase_n"],
+                "title": ph["title"],
+                "objective": ph["objective"],
+                "doc_path": f"phases/phase-{ph['phase_n']:02d}.md",
+            })
+
     (run_dir / "phases.json").write_text(
         _json.dumps(phases_index, indent=2) + "\n", encoding="utf-8",
     )
 
     # Update state with phase counts.
     rs = RunState.load(run_dir / "state.json")
-    rs.total_phases = len(phases)
+    rs.total_phases = len(phases_index)
     rs.current_phase = 1
     rs.save(run_dir / "state.json")
 
@@ -871,7 +1167,8 @@ def _cmd_plan_init(args) -> int:
         "plan_path": str(plan_path),
         "plan_source": plan_source,
         "phases": phases_index,
-        "summary": f"{len(phases)} phase(s) drafted",
+        "phase_validation_errors": phase_validation_errors,
+        "summary": f"{len(phases_index)} phase(s) drafted",
     })
     return 0
 
@@ -935,6 +1232,7 @@ def _cmd_plan_round(args) -> int:
     memo_full = memo_path.read_text(encoding="utf-8") if memo_path.exists() else ""
     memo_bounded = _bounded_memo(memo_full, max_rounds=3)
     current_phase_section = _load_current_phase_section(run_dir, rs.current_phase)
+    _phase_doc_path_str = str(run_dir / "phases" / f"phase-{rs.current_phase:02d}.md")
 
     prev_round = next_n - 1
     last_payload = ""
@@ -980,6 +1278,11 @@ Output ONLY JSON with this schema:
   ],
   "carry_forward": "<bullet summary of what to carry from previous round, or empty string>"
 }}
+
+Repo-inspection requirement (MANDATORY — do this BEFORE drafting execution_plan_bullets):
+- OPEN every file listed under the ## Target Files section of the current phase document (phase doc path: {_phase_doc_path_str}).
+- Read enough of each file to locate the relevant functions, classes, or line ranges.
+- In EACH execution_plan_bullets entry, quote a specific function name, symbol name, or line range from the file you opened (e.g. "python/agent_loop/cli.py:_cmd_plan_round" or "python/agent_loop/cli.py:350-390").
 
 Execution plan quality rules (MANDATORY — violations cause worker failure):
 - Every bullet in execution_plan_bullets MUST name a specific file path (e.g. "python/agent_loop/cli.py:354", NOT "the CLI file").
@@ -1063,6 +1366,47 @@ If `reasoning_effort` is unclear, prefer `{default_effort}`.
         allowed_efforts=allowed_efforts,
         default_effort=default_effort,
     )
+
+    # Quality gate: validate round plan bullets and acceptance criteria.
+    # Skip quality retry when parse already failed (parse_failed handles that path).
+    quality_failed = False
+    quality_errors: list[str] = []
+    if not round_plan.get("parse_failed"):
+        _phase_target_files = _parse_phase_target_files(run_dir, rs.current_phase)
+        _quality_errors_1 = _validate_round_plan_quality(round_plan, repo, _phase_target_files)
+        if _quality_errors_1:
+            # Retry once with vagueness rejection preamble
+            _retry_preamble = (
+                "Your previous round plan was rejected for vagueness for the following reasons:\n"
+                + "\n".join(_quality_errors_1)
+                + "\nReturn corrected JSON matching the schema exactly.\n\n"
+            )
+            try:
+                _retry_res = call_codex(_retry_preamble + round_plan_prompt)
+                round_plan = _parse_round_plan(
+                    _retry_res.final_text,
+                    round_n=next_n,
+                    allowed_models=allowed_models,
+                    default_model=default_model,
+                    allowed_efforts=allowed_efforts,
+                    default_effort=default_effort,
+                )
+                if not round_plan.get("parse_failed"):
+                    quality_errors = _validate_round_plan_quality(round_plan, repo, _phase_target_files)
+                else:
+                    quality_errors = _quality_errors_1
+            except CodexCallError:
+                quality_errors = _quality_errors_1
+            quality_failed = bool(quality_errors)
+        # If first attempt passed, quality_failed stays False and quality_errors stays []
+
+    # Attach quality flags to the round_plan dict for disk persistence and downstream use.
+    round_plan["quality_failed"] = quality_failed
+    round_plan["quality_errors"] = quality_errors
+    if quality_failed:
+        round_plan.setdefault("safety_flags", [])
+        if "quality_failed" not in round_plan["safety_flags"]:
+            round_plan["safety_flags"].append("quality_failed")
 
     # Build the worker prompt using the Python template (A2).
     # Collect the union of required_reading from all subtasks.
@@ -1148,9 +1492,146 @@ If `reasoning_effort` is unclear, prefer `{default_effort}`.
         "subtask_count": len(subtasks),
         "commit_message": round_plan["commit_message"],
         "phase_complete_signal": round_plan["phase_complete_signal"],
+        "quality_failed": quality_failed,
+        "quality_errors": quality_errors,
         "summary": f"round {next_n} prompt drafted",
     })
     return 0
+
+
+def _parse_phase_target_files(run_dir: "_Path", current_phase: int) -> "list[str]":
+    """Parse ## Target Files from the current phase doc.
+
+    Returns a de-duped, order-preserved list of repo-relative path strings.
+    On any IO/parse error returns [].
+    """
+    import re as _re
+    phase_doc_path = run_dir / "phases" / f"phase-{current_phase:02d}.md"
+    try:
+        content = phase_doc_path.read_text(encoding="utf-8")
+    except OSError:
+        return []
+
+    # Find the ## Target Files section: between that heading and the next ## heading.
+    m = _re.search(
+        r"^##\s+Target Files\s*\n(.*?)(?=^##\s+|\Z)",
+        content,
+        _re.MULTILINE | _re.DOTALL,
+    )
+    if not m:
+        return []
+
+    section_text = m.group(1)
+    seen: set[str] = set()
+    result: list[str] = []
+    for line in section_text.splitlines():
+        stripped = line.strip()
+        if not stripped.startswith("-"):
+            continue
+        # Strip leading "- "
+        token_text = stripped[1:].strip()
+        if not token_text or token_text.lower() == "(none)":
+            continue
+        # Take the first whitespace-or-( delimited token
+        token = _re.split(r"[\s(]", token_text)[0].strip()
+        if token and token not in seen:
+            seen.add(token)
+            result.append(token)
+    return result
+
+
+def _validate_round_plan_quality(
+    round_plan: dict,
+    repo: "_Path",
+    phase_target_files: "list[str] | None" = None,
+) -> "list[str]":
+    """Validate round plan for concrete file-backed bullets and runnable acceptance criteria.
+
+    Returns a list of error strings. Empty list means quality OK.
+    """
+    import re as _re
+
+    _FILE_EXTS = {".py", ".ts", ".tsx", ".js", ".jsx", ".md", ".toml", ".json", ".go", ".rs"}
+    _RUNNABLE_PATTERNS = [
+        "pytest ", "python -m ", "python ", "grep ", "npm ", "node ",
+        "go test", "cargo ", "rg ",
+    ]
+
+    if phase_target_files is None:
+        phase_target_files = []
+
+    errors: list[str] = []
+
+    # Validate execution_plan_bullets
+    bullets = round_plan.get("execution_plan_bullets") or []
+    for idx, bullet in enumerate(bullets):
+        if not isinstance(bullet, str):
+            continue
+        bullet_text = bullet.strip()
+        # Extract candidate path tokens: whitespace-delimited tokens with / AND a file extension
+        # Strip trailing punctuation and :NN line suffixes
+        tokens_raw = bullet_text.split()
+        candidate_paths: list[str] = []
+        for token in tokens_raw:
+            # Strip trailing punctuation (but not colons here — handled below)
+            token = _re.sub(r"[.,;)\]]+$", "", token)
+            # Extract the path part before any colon suffix (e.g. cli.py:354 or cli.py:_func)
+            # Split on ':' and take the first component as the candidate path.
+            colon_idx = token.find(":")
+            path_part = token[:colon_idx] if colon_idx != -1 else token
+            # Strip any remaining trailing punctuation from the path part
+            path_part = path_part.rstrip(".,;:)]")
+            # Check it has a / and a file extension
+            if "/" not in path_part:
+                continue
+            suffix = _Path(path_part).suffix if path_part else ""
+            if suffix not in _FILE_EXTS:
+                continue
+            # Reject absolute paths
+            if path_part.startswith("/") or path_part.startswith("\\"):
+                continue
+            candidate_paths.append(path_part)
+
+        if not candidate_paths:
+            truncated = bullet_text[:80]
+            errors.append(
+                f"bullet {idx}: missing concrete repo-resident path token: {truncated!r}"
+            )
+            continue
+
+        # Check if at least one candidate matches a target file or exists in repo
+        found_valid = False
+        for cpath in candidate_paths:
+            if cpath in phase_target_files:
+                found_valid = True
+                break
+            if (repo / cpath).exists():
+                found_valid = True
+                break
+
+        if not found_valid:
+            truncated = bullet_text[:80]
+            errors.append(
+                f"bullet {idx}: missing concrete repo-resident path token: {truncated!r}"
+            )
+
+    # Validate acceptance_criteria
+    criteria = round_plan.get("acceptance_criteria") or []
+    has_runnable = False
+    for crit in criteria:
+        if not isinstance(crit, str):
+            continue
+        if any(pat in crit for pat in _RUNNABLE_PATTERNS):
+            has_runnable = True
+            break
+        if crit.strip().startswith("$ "):
+            has_runnable = True
+            break
+
+    if not has_runnable:
+        errors.append("acceptance_criteria: no runnable command pattern found")
+
+    return errors
 
 
 def _parse_review_fields(review_md: str) -> dict:
@@ -1877,6 +2358,70 @@ def _cmd_memo_note(args) -> int:
     return 0
 
 
+@register("phase-commit")
+def _cmd_phase_commit(args) -> int:
+    import subprocess as _sp
+
+    repo = _Path(args.repo).resolve()
+    run_dir = _run_dir(repo, args.run)
+
+    # Look up phase title from phases.json
+    title = f"Phase {args.phase}"
+    phases_json_path = run_dir / "phases.json"
+    if phases_json_path.exists():
+        try:
+            phases = _json.loads(phases_json_path.read_text(encoding="utf-8"))
+            entry = next((p for p in phases if isinstance(p, dict) and p.get("phase_n") == args.phase), None)
+            if entry and entry.get("title"):
+                title = entry["title"]
+        except (_json.JSONDecodeError, OSError):
+            pass
+
+    # Stage changes (exclude .agent-loop)
+    stage_r = _sp.run(
+        ["git", "add", "--", ".", ":(exclude).agent-loop"],
+        cwd=repo, capture_output=True, text=True,
+    )
+    if stage_r.returncode != 0:
+        print(stage_r.stderr, file=sys.stderr)
+        return 1
+
+    # Check if anything is staged
+    diff_r = _sp.run(
+        ["git", "diff", "--cached", "--quiet"],
+        cwd=repo, capture_output=True,
+    )
+    if diff_r.returncode == 0:
+        # Exit code 0 means no diff — nothing staged
+        print("phase-commit: nothing staged to commit", file=sys.stderr)
+        return 1
+
+    # Create the commit
+    message = f"phase {args.phase}: {title}"
+    commit_r = _sp.run(
+        ["git", "commit", "-m", message],
+        cwd=repo, capture_output=True, text=True,
+    )
+    if commit_r.returncode != 0:
+        print(commit_r.stderr, file=sys.stderr)
+        return 1
+
+    # Get commit sha
+    sha_r = _sp.run(
+        ["git", "rev-parse", "HEAD"],
+        cwd=repo, capture_output=True, text=True,
+    )
+    commit_sha = sha_r.stdout.strip() if sha_r.returncode == 0 else ""
+
+    # Record in state
+    rs = RunState.load(run_dir / "state.json")
+    rs.record_phase_commit(args.phase, commit_sha)
+    rs.save(run_dir / "state.json")
+
+    _emit({"phase": args.phase, "commit_sha": commit_sha, "message": message})
+    return 0
+
+
 @register("phase-review")
 def _cmd_phase_review(args) -> int:
     import re as _re
@@ -1888,9 +2433,16 @@ def _cmd_phase_review(args) -> int:
     repo = _Path(args.repo).resolve()
     run_dir = _run_dir(repo, args.run)
 
-    # Collect phase diff from the phase commit
+    # Guard: require phase-commit to have been recorded first
+    rs = RunState.load(run_dir / "state.json")
+    if not rs.phase_commits.get(str(args.phase)):
+        print(f"phase-commit not recorded for phase {args.phase}", file=sys.stderr)
+        return 1
+
+    # Collect phase diff from the recorded phase commit sha
+    phase_commit_sha = rs.phase_commits[str(args.phase)]
     diff_result = _sp.run(
-        ["git", "diff", "HEAD~1"],
+        ["git", "diff", f"{phase_commit_sha}~1", phase_commit_sha],
         cwd=repo, capture_output=True, text=True, encoding="utf-8", errors="replace",
     )
     phase_diff = diff_result.stdout if diff_result.returncode == 0 else "(git diff failed)"

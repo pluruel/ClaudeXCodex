@@ -53,6 +53,7 @@ to execution.
 
      ## Phases
      1. **<Phase name>** -- <one sentence objective>
+        - Scope hint: <one short line — file paths, area of code, or domain hint>
      2. ...
 
      ## Open Questions
@@ -91,7 +92,7 @@ to execution.
    `.agent-loop-plan-draft.md`. Fix any unchecked items before proceeding.
 
 2. Expand the draft into the final plan format, adding required sections that may be
-   missing (Tech Stack, Interface Contracts, Example Scenarios, per-phase Testing).
+   missing (Tech Stack, Interface Contracts, Example Scenarios).
    Compose the full plan markdown:
 
    ```markdown
@@ -122,19 +123,14 @@ to execution.
    - Key type names and property shapes referenced across phases
 
    ## Phases
-   1. **<Phase name>** -- <objective>
-      - Target files: `path/to/file.py`, `path/to/other.ts`
-      - Before/after: <intent-level description of the change>
-      - Testing:
-        - What to test: <what behavior or output to verify>
-        - How to verify: `<command>` -- expected output / observable effect
-      - Acceptance criteria:
-        - [ ] <checkable condition>
-        - [ ] <checkable condition>
+   1. **<Phase name>** -- <one sentence objective>
+      - Scope hint: <one short line — file paths, area of code, or domain hint>
    2. ...
-   <!-- Simple phases may use the one-liner form: `1. **Name** -- objective`.
-        A one-liner phase implicitly uses "objective achieved" as its criterion
-        and is exempt from the expanded acceptance-criteria requirement. -->
+   <!-- Each phase is a lean two-line entry: name + objective + Scope hint.
+        Concrete Target Files, Acceptance Criteria, and Testing are populated
+        later by plan-init (Codex inspects the repo and fills in the detail).
+        Do NOT author per-phase Target files, Before/after, Testing, or
+        Acceptance criteria here — that is Codex's job, not the supervisor's. -->
 
    ## Example Scenarios
    <!-- Required for non-trivial plans. Concrete before/after or usage examples. -->
@@ -145,25 +141,25 @@ to execution.
    <any constraints, risks, or context worth preserving>
 
    ## Review Checklist
-   - [ ] Every phase has a concrete, checkable acceptance criterion (or uses the one-liner exemption)
+   - [ ] Every phase has a name, one-sentence objective, and a Scope hint
    - [ ] If the plan is non-trivial, Tech Stack lists actual version numbers or "latest stable" explicitly
    - [ ] If the plan is non-trivial, Interface contracts name actual identifiers (no vague "the function that does Y")
    - [ ] Non-goals section excludes at least one tempting scope expansion
    - [ ] No placeholder language remains (TBD, TODO, etc.)
    - [ ] If the plan is non-trivial, Example Scenarios contains at least one concrete before/after example
-   - [ ] Phase Testing sub-sections specify a runnable command or observable result
+   - [ ] Phases do NOT include per-phase Target files, Acceptance criteria, or Testing (those are filled by plan-init)
    ```
 
    **Required sections** (always): Goal, Architecture, Phases, Non-goals, Review Checklist.
 
    **Required when the plan is non-trivial** (more than one phase, or phases touch
-   multiple files or public APIs): Tech Stack, Interface Contracts, Example Scenarios,
-   and detailed Testing sub-sections in each phase.
+   multiple files or public APIs): Tech Stack, Interface Contracts, Example Scenarios.
 
-   **Per-phase Testing sub-section**: Required whenever a phase has acceptance criteria.
-   Specify *what* to test (the behavior) and *how to verify it* (a runnable command or
-   observable result). Do not import TDD micro-step sequences into the plan -- Codex
-   plan-round drives implementation steps; the plan defines the acceptance bar only.
+   **Phases format**: Each phase is a lean two-line block: `1. **Name** -- objective` followed
+   by `   - Scope hint: <one line>`. Do NOT include per-phase Target files, Before/after,
+   Testing, or Acceptance criteria — these are deliberately deferred to `plan-init`, which
+   injects scout signal from the repo and instructs Codex to read actual source files before
+   populating concrete file paths and verification commands.
 
    **Plan documents must be written in English.** Codex interprets English instructions
    more accurately than mixed-language plans, and technical identifiers (file paths,
@@ -220,8 +216,9 @@ If you are tempted to write one of these, ask the user a clarifying question ins
 
 Before writing the authorized plan to disk (step 3 of **On user confirmation**), confirm each item:
 
-- [ ] Every phase has a concrete, checkable acceptance criterion (not just "implement X"),
-      or uses the one-liner form (which uses "objective achieved" as its implicit criterion).
+- [ ] Every phase has a name, one-sentence objective, and a Scope hint line (the lean two-line form).
+- [ ] Phases do NOT include per-phase Target files, Before/after, Testing, or Acceptance criteria
+      (those are filled by plan-init, not authored by the supervisor).
 - [ ] If the plan is non-trivial, Tech Stack lists actual version numbers or "latest stable"
       explicitly, not just library names.
 - [ ] If the plan is non-trivial, Interface contracts name actual identifiers (function names,
@@ -230,8 +227,6 @@ Before writing the authorized plan to disk (step 3 of **On user confirmation**),
 - [ ] No placeholder language (see list above) remains in any section.
 - [ ] If the plan is non-trivial, Example Scenarios section contains at least one concrete
       before/after or input/output example.
-- [ ] Phase Testing sub-sections specify a runnable command or observable result, not just
-      "verify it works".
 
 If any item is unchecked, revise the plan before proceeding to step 2.
 

@@ -319,12 +319,10 @@ For each round N (starting at 1):
 
 8. **Phase commit.**
 
-   ```bash
-   git add -- . ":(exclude).agent-loop"
-   git commit -m "phase <current_phase>: <phase title from phases.json>"
-   ```
+   `Bash: "${CLAUDE_PLUGIN_ROOT}/bin/agent-loop" phase-commit --run <run_id> --phase <current_phase>`
+   → JSON `{phase, commit_sha, message}`.
 
-   Show the commit hash to the user.
+   Show the commit hash to the user. (phase-review will refuse to run until this sha is recorded.)
 
 9. **Phase review.**
 
@@ -353,10 +351,7 @@ For each round N (starting at 1):
       - Supervisor cannot construct a defensible rationale.
 
       Otherwise: dispatch fix round(s). After implementation + verification pass:
-      ```bash
-      git add -- . ":(exclude).agent-loop"
-      git commit -m "phase <current_phase>: fix <one-line summary>"
-      ```
+      `Bash: "${CLAUDE_PLUGIN_ROOT}/bin/agent-loop" phase-commit --run <run_id> --phase <current_phase>`
       Re-run `phase-review`. Repeat from step 9.
 
 ## On continue (`/ClaudeXCodex:agent-loop` or `/ClaudeXCodex:agent-loop continue`)
@@ -382,7 +377,7 @@ For each round N (starting at 1):
 ## Forbidden actions
 
 - Never run `git push` or any destructive command yourself.
-- `git commit` is allowed only in step 8 (phase commit) and step 10 (fix round re-commit).
+- Use `agent-loop phase-commit` (steps 8 and 10) instead of raw `git commit` for phase boundaries.
 - Never read full diff/result/log files into your context. Use the `inspect` subcommand with narrow `--lines` only when the JSON status is insufficient. `--lines` accepts `N` (first N), `N-` (from N onward), or `A-B` (range).
 - Never invent CLI behavior — if a subcommand's JSON doesn't match what you expected, stop and report to the user.
 

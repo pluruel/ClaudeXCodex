@@ -64,6 +64,7 @@ class RunState:
     safety_flags: list[str] = field(default_factory=list)
     last_heartbeat: Optional[str] = None
     phase_reviews: list[dict] = field(default_factory=list)
+    phase_commits: dict = field(default_factory=dict)
 
     @classmethod
     def new(cls, *, run_id: str, goal_path: str, plan_path: str) -> "RunState":
@@ -81,6 +82,7 @@ class RunState:
         raw.setdefault("total_phases", 1)
         raw.setdefault("phase_advance_pending", False)
         raw.setdefault("phase_reviews", [])
+        raw.setdefault("phase_commits", {})
         return cls(rounds=rounds, **raw)
 
     def save(self, path: Path) -> None:
@@ -115,6 +117,10 @@ class RunState:
         """Increment current_phase (capped at total_phases) and clear pending flag."""
         self.current_phase = min(self.current_phase + 1, self.total_phases)
         self.phase_advance_pending = False
+
+    def record_phase_commit(self, phase_n: int, sha: str) -> None:
+        """Record the commit sha for a phase boundary."""
+        self.phase_commits[str(phase_n)] = sha
 
     def add_phase_review(self, *, phase_n: int, decision: str, sha: str, review_path: str) -> None:
         self.phase_reviews.append({
