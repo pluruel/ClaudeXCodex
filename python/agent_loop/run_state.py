@@ -125,10 +125,16 @@ class RunState:
         })
 
     def consecutive_phase_needs_changes(self, phase_n: int) -> int:
-        """Count consecutive NEEDS_CHANGES phase reviews for phase_n at the tail."""
+        """Count consecutive NEEDS_CHANGES phase reviews for phase_n at the tail.
+
+        Stops at the first non-matching phase entry once counting has begun,
+        treating interleaved phases as streak-breakers.
+        """
         count = 0
         for r in reversed(self.phase_reviews):
             if r["phase_n"] != phase_n:
+                if count > 0:
+                    break
                 continue
             if r["decision"] == "NEEDS_CHANGES":
                 count += 1

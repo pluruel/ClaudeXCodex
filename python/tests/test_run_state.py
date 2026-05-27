@@ -119,6 +119,15 @@ def test_phase_reviews_round_trip(tmp_path):
     assert rs2.phase_reviews == [{"phase_n": 2, "decision": "NEEDS_CHANGES", "sha": "xyz", "review_path": "phases/phase-02-review.md"}]
 
 
+def test_consecutive_phase_needs_changes_interleaved_phases():
+    rs = RunState.new(run_id="r", goal_path="g", plan_path="p")
+    rs.add_phase_review(phase_n=1, decision="NEEDS_CHANGES", sha="a", review_path="r1")
+    rs.add_phase_review(phase_n=2, decision="APPROVE", sha="b", review_path="r2")
+    rs.add_phase_review(phase_n=1, decision="NEEDS_CHANGES", sha="c", review_path="r3")
+    # ph2:APPROVE should break the streak for ph1 — result is 1, not 2
+    assert rs.consecutive_phase_needs_changes(1) == 1
+
+
 def test_phase_reviews_load_backward_compat(tmp_path):
     """Old state.json without phase_reviews field loads without error."""
     path = tmp_path / "state.json"
