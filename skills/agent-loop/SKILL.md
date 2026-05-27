@@ -43,8 +43,8 @@ This plugin ships schema docs at `${CLAUDE_PLUGIN_ROOT}/skills/references/` for 
 ## Artifact mode
 
 The default artifact mode is `compact`. After a clean review, the CLI keeps the
-durable files (`claude-prompt.md`, `codex-review.md`, and
-`review-payload.json`, plus the run-level state/memo/report files) and removes
+durable files (`claude-prompt.md`, `phases/phase-NN-review.md`, `phases/phase-NN-diff.patch`,
+plus the run-level state/memo/report files) and removes
 intermediate files such as `diff.patch`, `diff-stats.json`, and `progress.md`.
 
 If a run needs deep debugging, the user can create `.agent-loop/config.toml` in
@@ -113,7 +113,7 @@ plan emitted.
 
 ## Context discipline (mandatory)
 
-- You never read full diffs, test logs, claude-prompt.md, or codex-review.md. Not even "one quick pass." The memo is auto-composed by `phase-review`; do not call `append-memo` separately.
+- You never read full diffs, test logs, claude-prompt.md, or phase review files. Not even "one quick pass." The memo is auto-composed by `phase-review`; do not call `memo-note` redundantly after `phase-review`.
 - You only ingest the small JSON each CLI subcommand emits.
 - For details, you can run the CLI's `inspect` subcommand with narrow `--lines` to extract a slice — but only when JSON is genuinely insufficient (rare). `--lines` accepts `N` (first N), `N-` (from N onward), or `A-B` (range). Example: `agent-loop inspect --run <id> --round N --file codex-review.md --lines 80`.
 - You never call `codex exec` or `codex` directly — always via the CLI's `plan-init|plan-round|phase-review|memo-note` subcommands.
@@ -310,7 +310,7 @@ For each round N (starting at 1):
 
    Declare phase complete when BOTH hold:
    - All verification subtasks PASS (step 6 above).
-   - `phase_complete_signal: true` in the round plan, OR all `acceptance_criteria` from the round plan are satisfied per test results.
+   - `phase_complete_signal: true` in the round plan, OR all `acceptance_criteria` from the round plan (emitted in the `plan-round` JSON) are satisfied per test results in `shared/test-results.md`.
 
    If a hard round cap is needed: after 8 consecutive rounds in a phase without declaring completion, escalate to the user.
 
@@ -382,7 +382,7 @@ For each round N (starting at 1):
 ## Forbidden actions
 
 - Never run `git push` or any destructive command yourself.
-- `git commit` is allowed only in the APPROVE branch.
+- `git commit` is allowed only in step 8 (phase commit) and step 10 (fix round re-commit).
 - Never read full diff/result/log files into your context. Use the `inspect` subcommand with narrow `--lines` only when the JSON status is insufficient. `--lines` accepts `N` (first N), `N-` (from N onward), or `A-B` (range).
 - Never invent CLI behavior — if a subcommand's JSON doesn't match what you expected, stop and report to the user.
 
