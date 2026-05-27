@@ -63,6 +63,7 @@ mode = "debug"
 character** of the round — used for the user-facing announce line and as the fallback
 model when `subtasks` is missing or invalid. The per-subtask `model` and
 `reasoning_effort` fields govern actual dispatch when `subtasks` is present and valid.
+Note: review-round is always called after successful verification.
 
 ### Subtask roles and dispatch rules
 
@@ -70,13 +71,12 @@ When `subtasks` is present and valid, the round is decomposed into typed subtask
 
 | role | authority | parallelism | constraint |
 |---|---|---|---|
-| `analysis` | read code/docs; write to `shared/*` only | all siblings dispatch in parallel (no `depends_on` between them) | must NOT edit source files or tests |
-| `implementation` | patch source files, tests, configs | dispatched after all declared `depends_on` analysis ids complete | must NOT write to `shared/*` as scratch; only `decisions.md`, `knowledge.md`, `open-questions.md` |
-| `verification` | run named check commands; report pass/fail | dispatched after all implementation subtasks in this round complete | must name an explicit command in its deliverable |
+| `implementation` | patch source files, tests, configs | dispatched sequentially in depends_on order | must NOT write to `shared/*` as scratch; only `decisions.md`, `knowledge.md`, `open-questions.md` |
+| `verification` | run named test commands only (no state checking); report pass/fail | dispatched after all implementation subtasks in this round complete | must name an explicit command in its deliverable |
 
 Each subtask carries:
 - `id` — unique within the round
-- `role` — `analysis | implementation | verification`
+- `role` — `implementation | verification`
 - `model` — the worker model alias for this subtask
 - `reasoning_effort` — `low | medium | high`
 - `required_reading` — list of file paths (max 5; split the subtask if more are needed)
@@ -113,7 +113,7 @@ plan emitted.
 
 ## Context discipline (mandatory)
 
-- You never read full diffs, test logs, claude-prompt.md, or codex-review.md. Not even "one quick pass." The memo is auto-composed by `review-round` (commit rounds) or `memo-note` (non-commit rounds); you have no reason to open the review file.
+- You never read full diffs, test logs, claude-prompt.md, or codex-review.md. Not even "one quick pass." The memo is auto-composed by `review-round`; do not call `append-memo` separately.
 - You only ingest the small JSON each CLI subcommand emits.
 - For details, you can run the CLI's `inspect` subcommand with narrow `--lines` to extract a slice — but only when JSON is genuinely insufficient (rare). `--lines` accepts `N` (first N), `N-` (from N onward), or `A-B` (range). Example: `agent-loop inspect --run <id> --round N --file codex-review.md --lines 80`.
 - You never call `codex exec` or `codex` directly — always via the CLI's `plan-init|plan-round|review-round|memo-note` subcommands.
@@ -136,7 +136,7 @@ plan emitted.
    → JSON `{run_id, run_dir}`. Remember `run_id`.
 
 4. Run `plan-init --run <run_id>`. Verify `"plan_source": "pre-existing"` in output.
-
+4b. Read `<run_dir>/plan.md` into context. This is an allowed exception to the lean-context rule — plan.md is small and gives the supervisor routing context for verification failure judgment throughout the run.
 5. Enter the normal round loop.
 
 ## On start (`/ClaudeXCodex:agent-loop <goal text>`)
@@ -145,6 +145,7 @@ plan emitted.
    → JSON `{run_id, run_dir}`. Remember `run_id`.
 2. `Bash: "${CLAUDE_PLUGIN_ROOT}/bin/agent-loop" plan-init --run <run_id>`
    → JSON `{plan_path, phases, summary}`. (Codex drafted plan.md and phase docs on disk.)
+2b. Read `<run_dir>/plan.md` into context. This is an allowed exception to the lean-context rule — plan.md is small and gives the supervisor routing context for verification failure judgment throughout the run.
 3. Enter round loop (next section).
 
 ## Round loop (repeat until APPROVE / PHASE_COMPLETE)
@@ -158,7 +159,7 @@ For each round N (starting at 1):
 3. **Announce the round to the user** (one line, verbatim format, BEFORE dispatch):
 
    ```
-   Phase <current_phase>/<total_phases> · Round N — worker (dominant): <worker_model> (<worker_model_reason>), effort: <reasoning_effort> — subtasks: <count> (analysis×<a>, implementation×<i>, verification×<v>)
+   Phase <current_phase>/<total_phases> · Round N — worker (dominant): <worker_model> (<worker_model_reason>), effort: <reasoning_effort> — subtasks: <count> (implementation×<i>, verification×<v>)
    ```
 
    Use the values returned by `plan-round` in step 1. Count each role from the
@@ -197,67 +198,21 @@ For each round N (starting at 1):
    Example block (rendered by the chat client as a real bulleted list):
 
    ```
-   - **r2-a1** → `sonnet` *(high)* — audit [worker_reasoning] wiring end-to-end
-   - **r2-a2** → `sonnet` *(high)* — audit round_plan.json / depends_on consistency
-   - **r2-i1** → `sonnet` *(medium)* — apply targeted fixes from r2-a1 / r2-a2
-   - **r2-v1** → `haiku` *(low)* — run pytest sweep + invariant grep
+   - **r2-i1** → `sonnet` *(medium)* — apply source fixes for phase 2
+   - **r2-i2** → `sonnet` *(medium)* — add test coverage for edge cases
+   - **r2-v1** → `haiku` *(low)* — run pytest
    ```
 
-   When multiple subtasks fan out in parallel (analysis phase), emit the
-   bullets as one contiguous list, then send the parallel Task calls together
-   in the SAME assistant turn. The bullets are plain user-facing markdown —
+   Emit bullets as a contiguous list before the corresponding Task calls. The bullets are plain user-facing markdown —
    not tool calls, not stored in any file — emitted purely so the user can
    see at a glance which model is handling which slice as the transcript
    scrolls.
 
-   **Phase 1 — Analysis (parallel):**
-   Collect all subtasks with `role: analysis`. Dispatch them simultaneously as
-   independent Task tool calls (no `depends_on` between siblings). Per-subtask prompt:
-
-   ```
-   Task tool (general-purpose):
-     description: "Round N / <subtask_id> (analysis) for <run_id>"
-     model: <subtask.model>   # drop if host rejects per-call model
-     prompt: |
-       You are subtask <subtask.id> (role=analysis, model=<subtask.model>,
-       reasoning_effort=<subtask.reasoning_effort>)
-       inside agent-loop run <run_id>, round N.
-
-       Strict role rules:
-       - You are an ANALYSIS subtask. You MUST NOT modify any source code, config,
-         or docs. No Edit, no Write outside .agent-loop/runs/<run_id>/shared/ and
-         .../rounds/NN/progress.md.
-       - Do NOT run record-diff or mark-worker-done.
-
-       Reasoning effort: <subtask.reasoning_effort>
-
-       Required Reading (in order):
-       <subtask.required_reading — one path per line>
-
-       Out of Scope (do not read or edit):
-       <subtask.out_of_scope — one path per line>
-
-       Deliverable: <subtask.deliverable>
-
-       When finished, APPEND to .agent-loop/runs/<run_id>/shared/decisions.md
-       (heading: ## Round N / <subtask.id> — <one-phrase summary>) and append
-       a line to .../rounds/NN/progress.md:
-         [done] <subtask.id> <deliverable summary>
-
-       Reply with EXACTLY ONE LINE:
-         OK
-       on success, or
-         FAIL: <one sentence>
-       on failure. No other output.
-   ```
-
-   Wait for ALL analysis Task tool calls to return before Phase 2.
-
-   **Phase 2 — Implementation (dependency-ordered):**
-   Collect all subtasks with `role: implementation`. Sort by `depends_on` so that
-   a subtask is dispatched only after every id in its `depends_on` list has returned
-   OK. If multiple implementation subtasks share no dependencies between each other,
-   dispatch them in parallel. Per-subtask prompt:
+   **Phase 1 — Implementation (sequential, depends_on order):**
+   Collect all subtasks with `role: implementation`. Dispatch implementation subtasks
+   one at a time in depends_on order. When plan-round emits multiple implementation
+   subtasks, they MUST be chained sequentially (each depends_on the previous).
+   Dispatch the next only after the current returns OK. Per-subtask prompt:
 
    ```
    Task tool (general-purpose):
@@ -280,8 +235,6 @@ For each round N (starting at 1):
 
        Reasoning effort: <subtask.reasoning_effort>
 
-       Context from analysis phase: see .agent-loop/runs/<run_id>/shared/
-
        Required Reading (in order):
        <subtask.required_reading — one path per line>
 
@@ -302,12 +255,11 @@ For each round N (starting at 1):
        on failure. No other output.
    ```
 
-   Wait for ALL implementation Task tool calls to return before Phase 3.
+   Wait for ALL implementation Task tool calls to return before Phase 2.
 
-   **Phase 3 — Verification (sequential or parallel as declared):**
+   **Phase 2 — Verification (test-only):**
    Collect all subtasks with `role: verification`. Each verification subtask must
-   name an explicit check command in its `deliverable`. Dispatch them (in parallel
-   if they have no mutual dependencies). Per-subtask prompt:
+   name an explicit test command in its `deliverable`. Per-subtask prompt:
 
    ```
    Task tool (general-purpose):
@@ -319,9 +271,10 @@ For each round N (starting at 1):
        inside agent-loop run <run_id>, round N.
 
        Strict role rules:
-       - You are a VERIFICATION subtask. You MUST NOT edit source files.
-       - Run the exact command(s) specified in your deliverable. Report pass/fail
-         and captured output.
+       - You are a VERIFICATION subtask. You MUST NOT edit source files. Run ONLY
+         the named test commands specified in your deliverable. Do NOT check
+         implementation state or read non-test files. Report pass/fail and
+         captured output.
        - Append progress to .../rounds/NN/progress.md.
 
        Deliverable (includes named check command): <subtask.deliverable>
@@ -345,16 +298,15 @@ For each round N (starting at 1):
    Run: `"${CLAUDE_PLUGIN_ROOT}/bin/agent-loop" record-diff --run <run_id> --round N --baseline <baseline>`
    Run: `"${CLAUDE_PLUGIN_ROOT}/bin/agent-loop" mark-worker-done --run <run_id> --round N`
 
-6. **Check verification outcome AND `commit_on_approve` before calling review-round.**
+6. **Check verification outcome before calling review-round.**
    Check the CURRENT ROUND's `rounds/NN/progress.md` for any `[done] <id> verification: fail` line (where NN is the current round number).
 
-   - **Any verification FAIL found** → Do NOT call `review-round`. Read failure details from `shared/test-results.md` for context. Dispatch a fix worker (next round) by default. Escalate to user only for planning-level issues (not fixable by code changes).
+   - **Any verification FAIL found** → Do NOT call `review-round`. Read the failure summary from `shared/test-results.md` (first 30 lines). Judge:
+     - If tests fail because implementation logic is wrong → dispatch a re-implementation worker (next round).
+     - If tests fail because test cases themselves are broken or incomplete → dispatch a test-fix worker (next round), which may edit test files.
+     Escalate to user only for planning-level issues (not fixable by code changes).
 
-   - **All verification PASS (or no verification subtask), AND `commit_on_approve == false`** (from `plan-round` step 1 JSON) →
-     `Bash: "${CLAUDE_PLUGIN_ROOT}/bin/agent-loop" memo-note --run <run_id> --round N`
-     → JSON `{memo_appended, memo_path, round, phase}`. Phase is "skipped". Loop back to step 1 (next round). Do NOT call `review-round`.
-
-   - **All verification PASS (or no verification subtask), AND `commit_on_approve == true`** →
+   - **All verification PASS (or no verification subtask)** →
      `Bash: "${CLAUDE_PLUGIN_ROOT}/bin/agent-loop" review-round --run <run_id> --round N`
      → JSON `{decision, current_phase, review_path, safety_flags, severity_counts, carry_forward, memo_appended, memo_path}`.
      Decision is one of APPROVE / NEEDS_CHANGES / PHASE_COMPLETE.
@@ -362,7 +314,7 @@ For each round N (starting at 1):
      do not call `append-memo` yourself.
 7. Branch on `decision`:
    - `APPROVE` →
-     1. If `commit_on_approve` is `true` (from `plan-round` step 1 JSON): `Bash: git add -A && git commit -m "<commit_message>"`. Show the commit hash to the user.
+     1. `Bash: git add -A && git commit -m "<commit_message>"`. Show the commit hash to the user.
      2. `Bash: "${CLAUDE_PLUGIN_ROOT}/bin/agent-loop" finalize --run <run_id>`. Tell the user the run completed; point them at `final-report.md`. END.
    - `PHASE_COMPLETE` →
      1. `Bash: "${CLAUDE_PLUGIN_ROOT}/bin/agent-loop" advance-phase --run <run_id>`
@@ -399,10 +351,10 @@ For each round N (starting at 1):
 2. Interpret `action`:
    - `plan_round` → start a fresh round at step 1 of the round loop
    - `dispatch` → re-announce the round (step 3), run `mark-dispatched` (step 4), then dispatch the worker (step 5)
-   - `advance_to_review` → worker result exists but review has not run; first check the current round's `rounds/NN/progress.md` for any `[done] <id> verification: fail` line — if found, treat as verification FAIL and dispatch a fix worker instead of calling review-round. Then check `commit_on_approve` from `round_plan.json`: if false → call `memo-note`; if true → call `review-round`.
-   - `write_review` → same as `advance_to_review`: first check the current round's `rounds/NN/progress.md` for any `[done] <id> verification: fail` line — if found, treat as verification FAIL and dispatch a fix worker instead of calling review-round. Then check `commit_on_approve`: if false → call `memo-note`; if true → run review-round (also re-composes memo if missing).
+   - `advance_to_review` → worker result exists but review has not run; check the current round's `rounds/NN/progress.md` for any `[done] <id> verification: fail` line — if found, treat as verification FAIL and dispatch a fix worker instead of calling review-round. Otherwise → call `review-round` directly.
+   - `write_review` → same as `advance_to_review`: check the current round's `rounds/NN/progress.md` for any `[done] <id> verification: fail` line — if found, treat as verification FAIL and dispatch a fix worker instead of calling review-round. Otherwise → run review-round (also re-composes memo if missing).
    - `write_memo` → review-round was interrupted before memo append. Re-run review-round; it will re-invoke Codex and re-append the memo idempotently.
-   - `skip_review` → non-commit round; call `"${CLAUDE_PLUGIN_ROOT}/bin/agent-loop" memo-note --run <run_id> --round N`, then loop back to step 1 (next round).
+   - `skip_review` → verification passed; call `review-round` directly (same as `advance_to_review`). Successful verification always triggers review.
    - `branch_decision` → review and memo are done; go straight to step 7 (decision branch)
    - `advance_phase` → phase transition pending. Call `"${CLAUDE_PLUGIN_ROOT}/bin/agent-loop" advance-phase --run <run_id>`; if `is_last_phase` true, finalize; else loop back to round-loop step 1.
    - `finalize` → call finalize if the last completed round was approved
@@ -411,7 +363,7 @@ For each round N (starting at 1):
 ## Forbidden actions
 
 - Never run `git push` or any destructive command yourself.
-- `git commit` is allowed only in the APPROVE branch when `commit_on_approve` is `true`.
+- `git commit` is allowed only in the APPROVE branch.
 - Never read full diff/result/log files into your context. Use the `inspect` subcommand with narrow `--lines` only when the JSON status is insufficient. `--lines` accepts `N` (first N), `N-` (from N onward), or `A-B` (range).
 - Never invent CLI behavior — if a subcommand's JSON doesn't match what you expected, stop and report to the user.
 

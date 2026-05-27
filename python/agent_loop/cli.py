@@ -141,7 +141,7 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--run", required=True)
 
     # memo-note
-    p = sub.add_parser("memo-note", help="write skip-review memo block and set phase to skipped")
+    p = sub.add_parser("memo-note", help="write a round memo block and set phase to skipped (supervisor-directed)")
     _add_common(p)
     p.add_argument("--run", required=True)
     p.add_argument("--round", type=int, required=True)
@@ -295,14 +295,14 @@ def _normalize_subtask(raw: object, *, idx: int,
 
     # role
     raw_role = raw.get("role", "implementation")
-    role = raw_role if raw_role in ("analysis", "implementation", "verification") else "implementation"
+    role = raw_role if raw_role in ("implementation", "verification") else "implementation"
 
     # model
     raw_model = raw.get("model", default_model)
     model = raw_model if raw_model in allowed_models else default_model
 
     # reasoning_effort — role-aware default when missing
-    role_effort_defaults = {"analysis": "medium", "implementation": default_effort, "verification": "low"}
+    role_effort_defaults = {"implementation": default_effort, "verification": "low"}
     role_default = role_effort_defaults.get(role, default_effort)
     raw_effort = raw.get("reasoning_effort")
     effort = raw_effort if isinstance(raw_effort, str) and raw_effort in allowed_efforts else role_default
@@ -367,11 +367,10 @@ def _normalize_subtasks(raw: object, *, allowed_models: list[str], default_model
 
     B2: After individual normalization, a second pass detects and drops:
     - Cycle edges (A depends_on B which transitively depends_on A).
-    - Reverse-direction edges (an analysis subtask depending on an
-      implementation or verification subtask; any subtask depending on a
-      higher-role subtask in the wrong direction).
+    - Reverse-direction edges (any subtask depending on a higher-role subtask
+      in the wrong direction).
 
-    Role ordering (lowest to highest): analysis < implementation < verification.
+    Role ordering (lowest to highest): implementation < verification.
     A subtask may depend on same-role or lower-role subtasks only. A
     depends_on edge that points to a *higher*-role subtask is a reverse-
     direction edge and is dropped. Cycle edges are detected by DFS and dropped
@@ -389,7 +388,7 @@ def _normalize_subtasks(raw: object, *, allowed_models: list[str], default_model
     ]
 
     # B2: Build id -> subtask lookup and role-order map.
-    _role_order = {"analysis": 0, "implementation": 1, "verification": 2}
+    _role_order = {"implementation": 0, "verification": 1}
     id_to_st: dict[str, dict] = {st["id"]: st for st in subtasks}
 
     # B2: Cycle detection using DFS. Returns True if `start` can reach `target`
@@ -534,8 +533,8 @@ def _parse_round_plan(raw: str, *, round_n: int, allowed_models: list[str],
         "execution_plan_bullets": _list_field("execution_plan_bullets"),
         "acceptance_criteria": _list_field("acceptance_criteria"),
         "carry_forward": _str_field("carry_forward"),
-        # Commit fields: Codex decides during plan-round whether to commit on approve.
-        "commit_on_approve": bool(plan.get("commit_on_approve", False)),
+        # Commit field: commit_on_approve has been removed from the Codex output schema;
+        # review-round always runs for every round.
         "commit_message": str(plan.get("commit_message", "")).strip(),
         # B1: parse failure flag — True when the raw JSON was malformed or non-dict.
         "parse_failed": parse_failed,
@@ -947,8 +946,8 @@ Output ONLY JSON with this schema:
     "reasoning_effort": "{'|'.join(allowed_efforts)}",
     "subtasks": [
       {{
-        "id": "<round-unique string, e.g. r{next_n}-a1>",
-        "role": "analysis|implementation|verification",
+        "id": "<round-unique string, e.g. r{next_n}-i1>",
+        "role": "implementation|verification",
         "model": "<one of: {', '.join(allowed_models)}>",
         "reasoning_effort": "{'|'.join(allowed_efforts)}",
         "description": "<one sentence>",
@@ -958,8 +957,7 @@ Output ONLY JSON with this schema:
         "deliverable": "<what this subtask must produce>"
       }}
     ],
-    "commit_on_approve": true,
-    "commit_message": "<Conventional Commits one-liner, or empty string when commit_on_approve is false>"
+    "commit_message": "<Conventional Commits one-liner, or empty string if nothing shippable>"
   }},
   "task_description": "<one paragraph describing what the worker must accomplish this round>",
   "execution_plan_bullets": [
@@ -979,7 +977,6 @@ Execution plan quality rules (MANDATORY — violations cause worker failure):
 - Every bullet in execution_plan_bullets MUST name a specific file path (e.g. "python/agent_loop/cli.py:354", NOT "the CLI file").
 - Every bullet MUST state the exact change: function name, variable, line range, or the precise text to add/remove. "Update the function" is NOT acceptable.
 - A worker reading ONLY these bullets, with zero additional context, must be able to execute without inference or guesswork.
-- If reading code is needed before acting, add a dedicated analysis subtask (role=analysis) — do not embed assumptions in implementation bullets.
 
 Acceptance criteria quality rules (MANDATORY — vague criteria are rejected):
 - Every criterion in acceptance_criteria MUST be mechanically verifiable: a named test, a grep command, or a file-existence check.
@@ -1003,15 +1000,21 @@ Reasoning-effort selection rules (independent from model selection):
 
 Model and reasoning_effort are two independent axes. Do NOT collapse the two choices.
 
-Subtask rules:
-- analysis subtasks: MUST NOT modify source code or configs. Write only to shared files.
-  All analysis subtasks are parallelizable; they must have no depends_on between siblings.
-- implementation subtasks: MAY edit source files, tests, configs. Must declare depends_on
-  over the analysis ids they rely on.
-- verification subtasks: MUST NOT edit source files. Must name an exact check command
-  in the deliverable. Dispatched after all implementation subtasks complete.
-  If multiple verification subtasks exist, each must declare `depends_on` over ALL
-  preceding verification subtask ids to ensure sequential execution.
+Round granularity: one round should cover a complete, reviewable slice of work — not a single file change. Err on the side of larger rounds. Aim for round boundaries that correspond to meaningful milestones (a feature is functional, a subsystem is refactored, a test suite passes).
+
+Subtask roles and rules:
+
+| role | what it may do |
+|------|----------------|
+| `implementation` | MAY edit source files, tests, configs |
+| `verification` | run ONLY named pytest or equivalent test commands specified in the deliverable; do NOT run lint, grep, state inspection, or code review; report pass/fail only |
+
+- implementation subtasks: each must declare depends_on over any preceding implementation subtask ids it relies on.
+  When emitting multiple implementation subtasks, always chain them sequentially via depends_on: the second subtask must declare depends_on: [first_subtask_id], the third must declare depends_on: [second_subtask_id], and so on. Never emit parallel implementation subtasks.
+- verification subtasks: MUST NOT edit source files. Must name an exact check command in the deliverable.
+  Include a verification subtask only when there are named test commands (pytest, unittest, or equivalent) that the implementation subtasks would not run themselves. Do NOT use verification subtasks for lint, grep, or state inspection.
+  Dispatched after all implementation subtasks complete.
+  If multiple verification subtasks exist, each must declare `depends_on` over ALL preceding verification subtask ids to ensure sequential execution.
   Each verification subtask MUST append its results to `shared/test-results.md`
   under a `## <subtask_id>` heading:
     ## <subtask_id>
@@ -1026,15 +1029,6 @@ summary for the user announce line. Per-subtask model/effort govern actual dispa
 
 If the ideal model is unavailable, choose the closest allowed model from the list.
 If `reasoning_effort` is unclear, prefer `{default_effort}`.
-
-Commit decision rules:
-- Set commit_on_approve to true when this round will land production-ready changes
-  that form a coherent, shippable unit (feature, fix, refactor).
-- Set commit_on_approve to false for exploratory analysis, partial-progress, or
-  scaffolding rounds that do not yet stand alone.
-- When true, write commit_message as a Conventional Commits one-liner
-  (e.g. "feat(auth): add JWT refresh endpoint"). Keep it under 72 characters.
-- When false, commit_message must be an empty string.
 
 ## Goal
 {goal}
@@ -1144,7 +1138,6 @@ Commit decision rules:
         "reasoning_effort": round_plan["reasoning_effort"],
         "subtasks": subtasks,
         "subtask_count": len(subtasks),
-        "commit_on_approve": round_plan["commit_on_approve"],
         "commit_message": round_plan["commit_message"],
         "summary": f"round {next_n} prompt drafted",
     })
@@ -1259,20 +1252,12 @@ def _cmd_review_round(args) -> int:
     run_dir = _run_dir(repo, args.run)
     rd = run_dir / "rounds" / f"{args.round:02d}"
 
-    # Hard-gate: refuse to run Codex review if this round is non-commit
+    # Verify round plan exists before proceeding.
     _gate_path = rd / "round_plan.json"
     if not _gate_path.exists():
         _gate_path = rd / "round-plan.json"
     if not _gate_path.exists():
-        print(f"review-round refused: no round plan found for round {args.round}; cannot confirm commit_on_approve", file=sys.stderr)
-        return 1
-    try:
-        _rp = _json.loads(_gate_path.read_text(encoding="utf-8"))
-    except (_json.JSONDecodeError, OSError):
-        print(f"review-round refused: could not read round plan for round {args.round}", file=sys.stderr)
-        return 1
-    if not _rp.get("commit_on_approve", False):
-        print(f"review-round skipped: round {args.round} has commit_on_approve=false; use memo-note instead", file=sys.stderr)
+        print(f"review-round refused: no round plan found for round {args.round}", file=sys.stderr)
         return 1
 
     cfg = _load_config(repo)
@@ -1838,22 +1823,12 @@ def _cmd_memo_note(args) -> int:
     run_dir = _run_dir(repo, args.run)
     rd = run_dir / "rounds" / f"{args.round:02d}"
 
-    # Safety check: refuse if commit_on_approve is true (or plan is missing/unreadable)
+    # memo-note is for supervisor-directed skip; verify round dir exists.
     _gate_path = rd / "round_plan.json"
     if not _gate_path.exists():
         _gate_path = rd / "round-plan.json"
-    # If no readable plan found: fail closed
     if not _gate_path.exists():
-        print(f"memo-note refused: no round_plan.json or round-plan.json found for round {args.round}; cannot determine commit_on_approve", file=sys.stderr)
-        return 1
-    try:
-        rp_data = _json.loads(_gate_path.read_text(encoding="utf-8"))
-    except (_json.JSONDecodeError, OSError):
-        print(f"memo-note refused: could not read round plan for round {args.round}", file=sys.stderr)
-        return 1
-    commit_on_approve = bool(rp_data.get("commit_on_approve", False))
-    if commit_on_approve:
-        print(f"memo-note refused: round {args.round} has commit_on_approve=true; use review-round instead", file=sys.stderr)
+        print(f"memo-note refused: no round_plan.json or round-plan.json found for round {args.round}", file=sys.stderr)
         return 1
 
     # Compute diff stats if diff.patch exists
@@ -1867,7 +1842,7 @@ def _cmd_memo_note(args) -> int:
     # Build memo block
     memo_block = "\n".join([
         f"## Round {args.round} - CONTINUE",
-        "- Goal progress: worker completed assigned subtasks (review skipped — non-commit round)",
+        "- Goal progress: worker completed assigned subtasks (round memo written; review deferred)",
         "- Top risks: (none flagged)",
         "- Carry forward: (none)",
         f"- Diff size: {diff_size_str}",
@@ -1881,8 +1856,7 @@ def _cmd_memo_note(args) -> int:
     rs.set_round_phase(args.round, "skipped")
     entry = rs._round(args.round)
     entry.ended_at = _dt.datetime.utcnow().isoformat()
-    entry.skip_reason = "commit_on_approve=false"
-    entry.skip_commit_on_approve = False
+    entry.skip_reason = "supervisor-directed skip"
     rs.save(run_dir / "state.json")
 
     _emit({

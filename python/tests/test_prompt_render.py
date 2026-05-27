@@ -66,8 +66,8 @@ def test_render_carry_forward_at_top() -> None:
 
 _SAMPLE_SUBTASKS = [
     {
-        "id": "r1-a1",
-        "role": "analysis",
+        "id": "r1-i1",
+        "role": "implementation",
         "model": "haiku",
         "description": "Map CLI entry points",
         "deliverable": "Append findings to shared/knowledge.md",
@@ -77,7 +77,7 @@ _SAMPLE_SUBTASKS = [
         "depends_on": [],
     },
     {
-        "id": "r1-i1",
+        "id": "r1-i2",
         "role": "implementation",
         "model": "sonnet",
         "description": "Add subtask block injection to plan-round",
@@ -85,7 +85,7 @@ _SAMPLE_SUBTASKS = [
         "reasoning_effort": "medium",
         "required_reading": [],
         "out_of_scope": [],
-        "depends_on": ["r1-a1"],
+        "depends_on": ["r1-i1"],
     },
 ]
 
@@ -93,9 +93,8 @@ _SAMPLE_SUBTASKS = [
 def test_render_subtasks_block_contains_all_columns() -> None:
     block = _render_subtasks_block(_SAMPLE_SUBTASKS)
     assert "### Subtasks (this round)" in block
-    assert "r1-a1" in block
     assert "r1-i1" in block
-    assert "analysis" in block
+    assert "r1-i2" in block
     assert "implementation" in block
     assert "haiku" in block
     assert "sonnet" in block

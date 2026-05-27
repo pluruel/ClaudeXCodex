@@ -48,7 +48,6 @@ class RoundEntry:
     started_at: Optional[str] = None
     ended_at: Optional[str] = None
     skip_reason: Optional[str] = None
-    skip_commit_on_approve: Optional[bool] = None
 
 
 @dataclass
@@ -75,7 +74,7 @@ class RunState:
         round_raws = raw.pop("rounds", [])
         for r in round_raws:
             r.setdefault("skip_reason", None)
-            r.setdefault("skip_commit_on_approve", None)
+            r.pop("skip_commit_on_approve", None)
         rounds = [RoundEntry(**r) for r in round_raws]
         raw.setdefault("current_phase", 1)
         raw.setdefault("total_phases", 1)

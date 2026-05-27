@@ -230,8 +230,8 @@ def test_plan_round_parses_and_persists_subtasks(tmp_repo: Path) -> None:
 
     subtasks = [
         {
-            "id": "r1-a1",
-            "role": "analysis",
+            "id": "r1-i1",
+            "role": "implementation",
             "model": "haiku",
             "reasoning_effort": "low",
             "description": "Map CLI entry points",
@@ -241,14 +241,14 @@ def test_plan_round_parses_and_persists_subtasks(tmp_repo: Path) -> None:
             "deliverable": "Append findings to shared/knowledge.md",
         },
         {
-            "id": "r1-i1",
+            "id": "r1-i2",
             "role": "implementation",
             "model": "sonnet",
             "reasoning_effort": "medium",
             "description": "Implement subtask parsing",
             "required_reading": ["python/agent_loop/cli.py"],
             "out_of_scope": [".git/"],
-            "depends_on": ["r1-a1"],
+            "depends_on": ["r1-i1"],
             "deliverable": "Pass tests for subtask normalization",
         },
     ]
@@ -273,10 +273,10 @@ def test_plan_round_parses_and_persists_subtasks(tmp_repo: Path) -> None:
     js = json.loads(r.stdout)
     assert js["subtask_count"] == 2
     assert len(js["subtasks"]) == 2
-    assert js["subtasks"][0]["id"] == "r1-a1"
-    assert js["subtasks"][0]["role"] == "analysis"
-    assert js["subtasks"][1]["id"] == "r1-i1"
-    assert js["subtasks"][1]["depends_on"] == ["r1-a1"]
+    assert js["subtasks"][0]["id"] == "r1-i1"
+    assert js["subtasks"][0]["role"] == "implementation"
+    assert js["subtasks"][1]["id"] == "r1-i2"
+    assert js["subtasks"][1]["depends_on"] == ["r1-i1"]
 
     # round_plan.json must include normalized subtasks
     rp = tmp_repo / ".agent-loop" / "runs" / run_id / "rounds" / "01" / "round_plan.json"
@@ -297,9 +297,8 @@ def test_plan_round_parses_and_persists_subtasks(tmp_repo: Path) -> None:
     pr = tmp_repo / ".agent-loop" / "runs" / run_id / "rounds" / "01" / "claude-prompt.md"
     prompt_text = pr.read_text(encoding="utf-8")
     assert "### Subtasks (this round)" in prompt_text
-    assert "r1-a1" in prompt_text
     assert "r1-i1" in prompt_text
-    assert "analysis" in prompt_text
+    assert "r1-i2" in prompt_text
     assert "implementation" in prompt_text
 
 
@@ -720,9 +719,6 @@ def test_review_round_surfaces_parse_failure_flag(tmp_repo: Path, codex_stub) ->
     rp = run_dir / "rounds" / "01" / "round_plan.json"
     rp_data = json.loads(rp.read_text(encoding="utf-8"))
     assert rp_data.get("parse_failed") is True
-    # Patch commit_on_approve so review-round gate is satisfied
-    rp_data["commit_on_approve"] = True
-    rp.write_text(json.dumps(rp_data), encoding="utf-8")
 
     _run(["mark-dispatched", "--run", run_id, "--round", "1"], cwd=tmp_repo)
     _run(["mark-worker-done", "--run", run_id, "--round", "1"], cwd=tmp_repo)
@@ -817,7 +813,7 @@ def test_normalize_subtask_default_description_uses_id() -> None:
 
 
 def test_normalize_subtasks_drops_reverse_edges() -> None:
-    """B2: An analysis subtask that depends_on an implementation subtask
+    """B2: A verification subtask that depends_on a later verification subtask
     is a reverse-direction edge and must be dropped (with a normalized_notes record)."""
     from agent_loop.cli import _normalize_subtasks
 
@@ -826,11 +822,16 @@ def test_normalize_subtasks_drops_reverse_edges() -> None:
          "reasoning_effort": "medium", "description": "do work",
          "required_reading": [], "out_of_scope": [], "depends_on": [],
          "deliverable": "write code"},
-        {"id": "r1-a1", "role": "analysis", "model": "haiku",
-         "reasoning_effort": "low", "description": "analyze stuff",
+        {"id": "r1-v1", "role": "verification", "model": "haiku",
+         "reasoning_effort": "low", "description": "run tests",
          "required_reading": [], "out_of_scope": [],
-         "depends_on": ["r1-i1"],  # reverse: analysis depending on implementation
-         "deliverable": "write findings"},
+         "depends_on": ["r1-v2"],  # reverse: v1 depending on v2 (which comes after)
+         "deliverable": "report pass/fail"},
+        {"id": "r1-v2", "role": "verification", "model": "haiku",
+         "reasoning_effort": "low", "description": "run more tests",
+         "required_reading": [], "out_of_scope": [],
+         "depends_on": ["r1-v1"],
+         "deliverable": "report pass/fail"},
     ]
     result = _normalize_subtasks(
         raw,
@@ -839,12 +840,15 @@ def test_normalize_subtasks_drops_reverse_edges() -> None:
         allowed_efforts=["low", "medium", "high"],
         default_effort="medium",
     )
-    a1 = next(st for st in result if st["id"] == "r1-a1")
-    assert "r1-i1" not in a1["depends_on"], \
-        f"Reverse edge should be dropped but depends_on={a1['depends_on']}"
+    v1 = next(st for st in result if st["id"] == "r1-v1")
+    v2 = next(st for st in result if st["id"] == "r1-v2")
+    all_notes = v1["normalized_notes"] + v2["normalized_notes"]
+    # Cycle must be broken: both cannot simultaneously depend on each other
+    assert not (("r1-v2" in v1["depends_on"]) and ("r1-v1" in v2["depends_on"])), \
+        "Cycle not broken: both subtasks still depend on each other"
     # normalized_notes must record the drop
-    assert any("dropped_reverse_edge" in note for note in a1["normalized_notes"]), \
-        f"Expected dropped_reverse_edge note but got {a1['normalized_notes']}"
+    assert any("dropped_cycle_edge" in note or "dropped_reverse_edge" in note for note in all_notes), \
+        f"Expected dropped edge note but got v1={v1['normalized_notes']} v2={v2['normalized_notes']}"
 
 
 def test_normalize_subtasks_drops_cyclic_edges() -> None:
@@ -990,9 +994,9 @@ def test_no_scope_in_subtasks_block() -> None:
     from agent_loop.cli import _render_subtasks_block
 
     subtasks = [
-        {"id": "r1-a1", "role": "analysis", "model": "haiku",
-         "reasoning_effort": "low", "description": "analyze",
-         "deliverable": "notes", "depends_on": []},
+        {"id": "r1-i1", "role": "implementation", "model": "haiku",
+         "reasoning_effort": "low", "description": "implement",
+         "deliverable": "code", "depends_on": []},
     ]
     block = _render_subtasks_block(subtasks)
     # The table header should not contain "scope"
@@ -1014,10 +1018,10 @@ def test_parse_round_plan_merged_envelope_both_fields() -> None:
             "worker_model_reason": "architecture refactor",
             "reasoning_effort": "high",
             "subtasks": [
-                {"id": "r2-a1", "role": "analysis", "model": "haiku",
-                 "reasoning_effort": "low", "description": "analyze",
+                {"id": "r2-i1", "role": "implementation", "model": "haiku",
+                 "reasoning_effort": "low", "description": "implement refactor",
                  "required_reading": ["file.py"], "out_of_scope": [],
-                 "depends_on": [], "deliverable": "notes"},
+                 "depends_on": [], "deliverable": "refactored code"},
             ],
         },
         "task_description": "Refactor the auth module",
@@ -1037,7 +1041,7 @@ def test_parse_round_plan_merged_envelope_both_fields() -> None:
     assert result["worker_model"] == "opus"
     assert result["reasoning_effort"] == "high"
     assert len(result["subtasks"]) == 1
-    assert result["subtasks"][0]["id"] == "r2-a1"
+    assert result["subtasks"][0]["id"] == "r2-i1"
 
     # Prompt-content fields
     assert result["task_description"] == "Refactor the auth module"

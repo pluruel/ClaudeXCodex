@@ -90,7 +90,7 @@ def test_memo_note_appends_to_memo(tmp_repo: Path) -> None:
 
     memo = (run_dir / "memo.md").read_text(encoding="utf-8")
     assert "## Round 1 - CONTINUE" in memo
-    assert "review skipped" in memo
+    assert "review deferred" in memo
 
     out = json.loads(r.stdout)
     assert out["memo_appended"] is True
@@ -110,24 +110,15 @@ def test_memo_note_idempotent(tmp_repo: Path) -> None:
     assert memo.count("## Round 1 - CONTINUE") == 1
 
 
-def test_resume_skip_review_action(tmp_path: Path) -> None:
-    """When last phase is claude_completed and commit_on_approve=False, determine_resume_action returns skip_review."""
+def test_resume_claude_completed_always_write_review(tmp_path: Path) -> None:
+    """When last phase is claude_completed, determine_resume_action always returns write_review
+    regardless of commit_on_approve — the gate has been removed."""
     rs = RunState.new(run_id="r", goal_path="g", plan_path="p")
     rs.start_round(n=1, started_at="t0")
     rs.set_round_phase(1, "claude_completed")
 
-    round_dir = tmp_path / "rounds" / "01"
-    round_dir.mkdir(parents=True)
-    round_plan = {
-        "round": 1,
-        "commit_on_approve": False,
-        "commit_message": "",
-    }
-    (round_dir / "round_plan.json").write_text(json.dumps(round_plan), encoding="utf-8")
-
     plan = determine_resume_action(rs, run_dir=tmp_path)
-    assert plan.action == "skip_review"
-    assert "commit_on_approve=false" in plan.notes
+    assert plan.action == "write_review"
 
 
 def test_resume_write_review_when_commit_on_approve_true(tmp_path: Path) -> None:
@@ -157,29 +148,32 @@ def test_resume_skipped_phase_returns_plan_round(tmp_path: Path) -> None:
 
     plan = determine_resume_action(rs, run_dir=tmp_path)
     assert plan.action == "plan_round"
-    assert "skipped" in plan.notes
+    assert "memo" in plan.notes
 
 
-def test_review_round_refuses_non_commit(tmp_repo: Path) -> None:
-    """review-round must refuse (rc=1) when commit_on_approve=false."""
+def test_review_round_proceeds_regardless_of_commit_on_approve(tmp_repo: Path) -> None:
+    """review-round must always proceed (rc=0 or codex-call failure is acceptable)
+    regardless of the commit_on_approve field — the gate has been removed."""
     run_dir, run_id = _make_run(tmp_repo, round_n=1, commit_on_approve=False)
 
     r = _run(["review-round", "--run", run_id, "--round", "1"], cwd=tmp_repo)
-    assert r.returncode == 1
-    assert "commit_on_approve=false" in r.stderr
+    # Without a codex binary available in tests, review-round may fail with rc=1 due to
+    # codex invocation error, but must NOT fail with commit_on_approve gating message.
+    assert "commit_on_approve=false" not in r.stderr
 
 
-def test_memo_note_refuses_commit_round(tmp_repo: Path) -> None:
-    """memo-note must refuse (rc=1) when commit_on_approve=true."""
+def test_memo_note_succeeds_regardless_of_commit_on_approve(tmp_repo: Path) -> None:
+    """memo-note must succeed (rc=0) regardless of commit_on_approve field — the gate is removed."""
     run_dir, run_id = _make_run(tmp_repo, round_n=1, commit_on_approve=True)
 
     r = _run(["memo-note", "--run", run_id, "--round", "1"], cwd=tmp_repo)
-    assert r.returncode == 1
-    assert "commit_on_approve=true" in r.stderr
+    assert r.returncode == 0, r.stderr
+    out = json.loads(r.stdout)
+    assert out["phase"] == "skipped"
 
 
 def test_skip_metadata_in_state(tmp_repo: Path) -> None:
-    """After memo-note on a non-commit round, state.json must have skip metadata."""
+    """After memo-note, state.json must have skip_reason set and phase=skipped."""
     run_dir, run_id = _make_run(tmp_repo, round_n=1, commit_on_approve=False)
     state_p = run_dir / "state.json"
 
@@ -188,8 +182,8 @@ def test_skip_metadata_in_state(tmp_repo: Path) -> None:
 
     rs = RunState.load(state_p)
     entry = rs._round(1)
-    assert entry.skip_reason == "commit_on_approve=false"
-    assert entry.skip_commit_on_approve is False
+    assert entry.skip_reason == "supervisor-directed skip"
+    assert entry.phase == "skipped"
 
 
 def _make_run_hyphenated_plan(tmp_repo: Path, round_n: int = 1, commit_on_approve: bool = False) -> tuple[Path, str]:
@@ -228,13 +222,13 @@ def _make_run_hyphenated_plan(tmp_repo: Path, round_n: int = 1, commit_on_approv
     return run_dir, run_id
 
 
-def test_review_round_gate_hyphenated_plan(tmp_repo: Path) -> None:
-    """review-round must refuse (rc=1) when only round-plan.json (hyphenated) exists with commit_on_approve=false."""
+def test_review_round_proceeds_with_hyphenated_plan(tmp_repo: Path) -> None:
+    """review-round must proceed (not gate on commit_on_approve) when only round-plan.json (hyphenated) exists."""
     run_dir, run_id = _make_run_hyphenated_plan(tmp_repo, round_n=1, commit_on_approve=False)
 
     r = _run(["review-round", "--run", run_id, "--round", "1"], cwd=tmp_repo)
-    assert r.returncode == 1
-    assert "commit_on_approve=false" in r.stderr
+    # The gate is removed; review-round must not refuse with commit_on_approve message.
+    assert "commit_on_approve=false" not in r.stderr
 
 
 def test_memo_note_hyphenated_plan(tmp_repo: Path) -> None:
@@ -288,4 +282,4 @@ def test_memo_note_fails_closed_missing_plan(tmp_repo: Path) -> None:
 
     r = _run(["memo-note", "--run", run_id, "--round", "1"], cwd=tmp_repo)
     assert r.returncode == 1
-    assert "cannot determine commit_on_approve" in r.stderr
+    assert "no round_plan.json or round-plan.json found" in r.stderr

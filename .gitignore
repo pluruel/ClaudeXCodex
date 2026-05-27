@@ -26,6 +26,8 @@ python/.venv/
 
 # Local agent-loop runs (never commit user run logs)
 .agent-loop/
+.agent-loop-plan.md
+.pytest-tmp*/
 
 # OS
 .DS_Store

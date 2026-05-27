@@ -82,28 +82,21 @@ def test_determine_resume_action_advance_phase_when_pending(tmp_path: Path) -> N
     assert plan.action == "advance_phase"
 
 
-def test_resume_user_confirm_missing_plan_after_claude_completed(tmp_path: Path) -> None:
-    """When last phase is claude_completed but NO round plan file exists (neither
-    round_plan.json nor round-plan.json), determine_resume_action must return
-    user_confirm so an unattended run does not silently attempt a review without
-    knowing whether commit_on_approve is True or False."""
+def test_resume_claude_completed_always_write_review(tmp_path: Path) -> None:
+    """When last phase is claude_completed, determine_resume_action must always return
+    write_review regardless of commit_on_approve — the gate has been removed."""
     rs = RunState.new(run_id="r", goal_path="g", plan_path="p")
     rs.start_round(n=1, started_at="t0")
     rs.set_round_phase(1, "claude_completed")
 
-    # Deliberately create the round dir with NO plan file
-    round_dir = tmp_path / "rounds" / "01"
-    round_dir.mkdir(parents=True)
-    # (no round_plan.json or round-plan.json written)
-
+    # No round plan file needed — claude_completed always routes to write_review
     plan = determine_resume_action(rs, run_dir=tmp_path)
-    assert plan.action == "user_confirm"
-    assert "no readable round plan" in plan.notes
+    assert plan.action == "write_review"
 
 
-def test_resume_skip_review_after_claude_completed_non_commit(tmp_path: Path) -> None:
-    """When last phase is claude_completed and round_plan.json has commit_on_approve=False,
-    determine_resume_action must return skip_review (non-commit round path)."""
+def test_resume_claude_completed_with_plan_always_write_review(tmp_path: Path) -> None:
+    """When last phase is claude_completed, determine_resume_action must return write_review
+    regardless of the commit_on_approve field value in round_plan.json."""
     import json
 
     rs = RunState.new(run_id="r", goal_path="g", plan_path="p")
@@ -112,13 +105,14 @@ def test_resume_skip_review_after_claude_completed_non_commit(tmp_path: Path) ->
 
     round_dir = tmp_path / "rounds" / "01"
     round_dir.mkdir(parents=True)
+    # Even with commit_on_approve=False, must return write_review
     (round_dir / "round_plan.json").write_text(
         json.dumps({"commit_on_approve": False, "commit_message": ""}),
         encoding="utf-8",
     )
 
     plan = determine_resume_action(rs, run_dir=tmp_path)
-    assert plan.action == "skip_review"
+    assert plan.action == "write_review"
 
 
 def test_resume_write_review_after_claude_completed_commit(tmp_path: Path) -> None:
@@ -141,9 +135,9 @@ def test_resume_write_review_after_claude_completed_commit(tmp_path: Path) -> No
     assert plan.action == "write_review"
 
 
-def test_resume_dispatched_non_commit_returns_skip_review(tmp_path: Path) -> None:
-    """When dispatched phase has completed progress and commit_on_approve=False,
-    determine_resume_action must return skip_review."""
+def test_resume_dispatched_completed_progress_returns_advance_to_review(tmp_path: Path) -> None:
+    """When dispatched phase has completed progress, determine_resume_action must return
+    advance_to_review regardless of commit_on_approve — the gate has been removed."""
     import json
 
     rs = RunState.new(run_id="r", goal_path="g", plan_path="p")
@@ -159,4 +153,4 @@ def test_resume_dispatched_non_commit_returns_skip_review(tmp_path: Path) -> Non
     )
 
     plan = determine_resume_action(rs, run_dir=tmp_path)
-    assert plan.action == "skip_review"
+    assert plan.action == "advance_to_review"
