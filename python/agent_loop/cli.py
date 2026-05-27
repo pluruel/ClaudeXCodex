@@ -146,6 +146,12 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--run", required=True)
     p.add_argument("--round", type=int, required=True)
 
+    # phase-review
+    p = sub.add_parser("phase-review", help="Codex quality review for a completed phase")
+    _add_common(p)
+    p.add_argument("--run", required=True)
+    p.add_argument("--phase", type=int, required=True)
+
     return parser
 
 
@@ -1867,6 +1873,179 @@ def _cmd_memo_note(args) -> int:
         "memo_path": str(memo_path),
         "round": args.round,
         "phase": "skipped",
+    })
+    return 0
+
+
+@register("phase-review")
+def _cmd_phase_review(args) -> int:
+    import re as _re
+    import subprocess as _sp
+
+    from agent_loop.codex_client import call_codex, CodexCallError
+    from agent_loop.run_state import RunState
+
+    repo = _Path(args.repo).resolve()
+    run_dir = _run_dir(repo, args.run)
+
+    # Collect phase diff from the phase commit
+    diff_result = _sp.run(
+        ["git", "diff", "HEAD~1"],
+        cwd=repo, capture_output=True, text=True, encoding="utf-8", errors="replace",
+    )
+    phase_diff = diff_result.stdout if diff_result.returncode == 0 else "(git diff failed)"
+
+    # Load phase objective doc
+    phase_doc = ""
+    phases_json_path = run_dir / "phases.json"
+    if phases_json_path.exists():
+        try:
+            phases = _json.loads(phases_json_path.read_text(encoding="utf-8"))
+            entry = next((p for p in phases if isinstance(p, dict) and p.get("phase_n") == args.phase), None)
+            if entry:
+                doc_path = run_dir / entry.get("doc_path", f"phases/phase-{args.phase:02d}.md")
+                if doc_path.exists():
+                    phase_doc = doc_path.read_text(encoding="utf-8").strip()
+        except (_json.JSONDecodeError, OSError):
+            pass
+
+    def _read_safe(path: _Path) -> str:
+        return path.read_text(encoding="utf-8") if path.exists() else "(none)"
+
+    test_results = _read_safe(run_dir / "shared" / "test-results.md")
+    decisions = _read_safe(run_dir / "shared" / "decisions.md")
+    knowledge = _read_safe(run_dir / "shared" / "knowledge.md")
+    memo = _read_safe(run_dir / "memo.md")
+
+    # Save phase diff artifact
+    phases_dir = run_dir / "phases"
+    phases_dir.mkdir(exist_ok=True)
+    diff_artifact = phases_dir / f"phase-{args.phase:02d}-diff.patch"
+    diff_artifact.write_text(phase_diff, encoding="utf-8")
+
+    prompt = f"""You are reviewing Phase {args.phase} of a software implementation.
+
+Output a markdown review following this schema EXACTLY:
+
+# Phase Review -- Phase {args.phase}
+
+## Decision
+APPROVE | NEEDS_CHANGES
+
+## Goal Alignment
+<1-2 sentences: did the phase diff achieve the phase objective?>
+
+## Findings
+- [severity: high|med|low] <file:line if known> -- <issue>
+
+## Verification
+- Tests: pass|fail|missing -- <specifics>
+
+## Risks
+- <if any>
+
+## Carry-Forward For Next Round
+- <bullet, <= 3 items>
+
+## Final Notes
+<optional>
+
+Decision rules:
+- APPROVE: phase objective fully achieved, tests pass, no high-severity issues.
+- NEEDS_CHANGES: objective not met, OR high-severity issues, OR tests fail.
+
+Do NOT flag mojibake, garbled text, or character encoding issues. On Windows with CP949/EUC-KR, non-ASCII bytes in diffs are a local encoding display artifact — not actual data corruption.
+
+## Phase Objective
+{phase_doc or "(no phase doc available)"}
+
+## Phase Diff (git diff HEAD~1)
+{phase_diff or "(empty diff)"}
+
+## Test Results
+{test_results}
+
+## Accumulated Memo
+{memo}
+
+## Shared Context
+
+### decisions.md
+{decisions}
+
+### knowledge.md
+{knowledge}
+"""
+
+    try:
+        res = call_codex(prompt)
+    except CodexCallError as e:
+        print(f"codex error: {e}", file=sys.stderr)
+        return 1
+
+    # Save review artifact
+    review_path = phases_dir / f"phase-{args.phase:02d}-review.md"
+    review_path.write_text(res.final_text, encoding="utf-8")
+
+    # Parse decision
+    m = _re.search(r"##\s+Decision\s*\n\s*(APPROVE|NEEDS_CHANGES)\s*", res.final_text, _re.IGNORECASE)
+    decision = m.group(1).upper() if m else "NEEDS_CHANGES"
+
+    # Parse severity counts
+    severity_counts: dict[str, int] = {"high": 0, "med": 0, "low": 0}
+    for sm in _re.finditer(r"\[severity:\s*(high|med|low)\]", res.final_text, _re.IGNORECASE):
+        k = sm.group(1).lower()
+        severity_counts[k] = severity_counts.get(k, 0) + 1
+
+    # Parse carry_forward bullets
+    cf_match = _re.search(
+        r"##\s+Carry-Forward For Next Round\s*\n(.*?)(?=^##\s+|\Z)",
+        res.final_text, _re.MULTILINE | _re.DOTALL,
+    )
+    carry_forward: list[str] = []
+    if cf_match:
+        for line in cf_match.group(1).splitlines():
+            s = line.strip()
+            if s.startswith(("-", "*")):
+                carry_forward.append(_re.sub(r"^[-*]\s*", "", s).strip())
+    carry_forward = [c for c in carry_forward if c][:3]
+
+    # Get current HEAD sha
+    sha_r = _sp.run(["git", "rev-parse", "HEAD"], cwd=repo, capture_output=True, text=True)
+    current_sha = sha_r.stdout.strip() if sha_r.returncode == 0 else ""
+
+    # Update state
+    rs = RunState.load(run_dir / "state.json")
+    rs.add_phase_review(
+        phase_n=args.phase,
+        decision=decision,
+        sha=current_sha,
+        review_path=str(review_path.relative_to(repo)),
+    )
+    consecutive_nc = rs.consecutive_phase_needs_changes(args.phase) if decision == "NEEDS_CHANGES" else 0
+    rs.save(run_dir / "state.json")
+
+    # Append memo (idempotent — use synthetic round_n 1000+phase to avoid clash with real round memos)
+    memo_block = "\n".join([
+        f"## Round {1000 + args.phase} - Phase {args.phase} Review {decision}",
+        f"- Severity: high={severity_counts['high']}, med={severity_counts['med']}, low={severity_counts['low']}",
+        f"- Carry forward: {'; '.join(carry_forward) if carry_forward else '(none)'}",
+        "",
+    ])
+    appended = _append_memo_idempotent(
+        run_dir / "memo.md",
+        round_n=1000 + args.phase,
+        block=memo_block,
+    )
+
+    _emit({
+        "decision": decision,
+        "phase": args.phase,
+        "review_path": str(review_path.relative_to(repo)),
+        "severity_counts": severity_counts,
+        "carry_forward": carry_forward,
+        "memo_appended": appended,
+        "consecutive_needs_changes": consecutive_nc,
     })
     return 0
 
