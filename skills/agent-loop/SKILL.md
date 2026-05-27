@@ -63,7 +63,7 @@ mode = "debug"
 character** of the round — used for the user-facing announce line and as the fallback
 model when `subtasks` is missing or invalid. The per-subtask `model` and
 `reasoning_effort` fields govern actual dispatch when `subtasks` is present and valid.
-Note: review-round is always called after successful verification.
+Note: phase-review is called after phase commit (step 9), not per-round.
 
 ### Subtask roles and dispatch rules
 
@@ -113,10 +113,10 @@ plan emitted.
 
 ## Context discipline (mandatory)
 
-- You never read full diffs, test logs, claude-prompt.md, or codex-review.md. Not even "one quick pass." The memo is auto-composed by `review-round`; do not call `append-memo` separately.
+- You never read full diffs, test logs, claude-prompt.md, or codex-review.md. Not even "one quick pass." The memo is auto-composed by `phase-review`; do not call `append-memo` separately.
 - You only ingest the small JSON each CLI subcommand emits.
 - For details, you can run the CLI's `inspect` subcommand with narrow `--lines` to extract a slice — but only when JSON is genuinely insufficient (rare). `--lines` accepts `N` (first N), `N-` (from N onward), or `A-B` (range). Example: `agent-loop inspect --run <id> --round N --file codex-review.md --lines 80`.
-- You never call `codex exec` or `codex` directly — always via the CLI's `plan-init|plan-round|review-round|memo-note` subcommands.
+- You never call `codex exec` or `codex` directly — always via the CLI's `plan-init|plan-round|phase-review|memo-note` subcommands.
 
 ## On start with `--plan <file>`
 
@@ -148,12 +148,12 @@ plan emitted.
 2b. Read `<run_dir>/plan.md` into context. This is an allowed exception to the lean-context rule — plan.md is small and gives the supervisor routing context for verification failure judgment throughout the run.
 3. Enter round loop (next section).
 
-## Round loop (repeat until APPROVE / PHASE_COMPLETE)
+## Round loop (repeat until phase-review APPROVE / run complete)
 
 For each round N (starting at 1):
 
 1. `Bash: "${CLAUDE_PLUGIN_ROOT}/bin/agent-loop" plan-round --run <run_id>`
-   → JSON `{round_n, current_phase, total_phases, prompt_path, round_plan_path, worker_model, worker_model_reason, reasoning_effort, summary}`. (Codex drafted the worker prompt and selected the worker model; the CLI normalized the selection and injected a `## Worker Model` section into the prompt.)
+   → JSON `{round_n, current_phase, total_phases, prompt_path, round_plan_path, worker_model, worker_model_reason, reasoning_effort, phase_complete_signal, subtasks, summary}`. (Codex drafted the worker prompt and selected the worker model; the CLI normalized the selection and injected a `## Worker Model` section into the prompt.)
 2. `Bash: "${CLAUDE_PLUGIN_ROOT}/bin/agent-loop" capture-baseline`
    → JSON `{baseline}`. Save the sha.
 3. **Announce the round to the user** (one line, verbatim format, BEFORE dispatch):
@@ -299,52 +299,65 @@ For each round N (starting at 1):
    Run: `"${CLAUDE_PLUGIN_ROOT}/bin/agent-loop" record-diff --run <run_id> --round N --baseline <baseline>`
    Run: `"${CLAUDE_PLUGIN_ROOT}/bin/agent-loop" mark-worker-done --run <run_id> --round N`
 
-6. **Check verification outcome before calling review-round.**
-   Check the CURRENT ROUND's `rounds/NN/progress.md` for any `[done] <id> verification: fail` line (where NN is the current round number).
+6. **Check verification outcome.**
+   Check the CURRENT ROUND's `rounds/NN/progress.md` for any `[done] <id> verification: fail` line.
 
-   - **Any verification FAIL found** → Do NOT call `review-round`. Read the failure summary from `shared/test-results.md` (first 30 lines). Judge:
-     - If tests fail because implementation logic is wrong → dispatch a re-implementation worker (next round).
-     - If tests fail because test cases themselves are broken or incomplete → dispatch a test-fix worker (next round), which may edit test files.
-     - If lint or type checks fail → dispatch a re-implementation worker (next round) with the lint error output as context.
-     Escalate to user only for planning-level issues (not fixable by code changes).
+   - **Any verification FAIL found** → Do NOT proceed to phase judgment. Read failure summary from `shared/test-results.md` (first 30 lines). Dispatch a fix worker (next round). Loop back to step 1.
 
-   - **All verification PASS (or no verification subtask)** →
-     `Bash: "${CLAUDE_PLUGIN_ROOT}/bin/agent-loop" review-round --run <run_id> --round N`
-     → JSON `{decision, current_phase, review_path, safety_flags, severity_counts, carry_forward, memo_appended, memo_path}`.
-     Decision is one of APPROVE / NEEDS_CHANGES / PHASE_COMPLETE.
-     `review-round` automatically parses the Codex review and appends the round memo to `memo.md`;
-     do not call `append-memo` yourself.
-7. Branch on `decision`:
-   - `APPROVE` →
-     1. `Bash: git add -A && git commit -m "<commit_message>"`. Show the commit hash to the user.
-     2. `Bash: "${CLAUDE_PLUGIN_ROOT}/bin/agent-loop" finalize --run <run_id>`. Tell the user the run completed; point them at `final-report.md`. END.
-   - `PHASE_COMPLETE` →
-     1. `Bash: "${CLAUDE_PLUGIN_ROOT}/bin/agent-loop" advance-phase --run <run_id>`
-        → JSON `{previous_phase, current_phase, updated_doc, is_last_phase}`.
-     2. If `is_last_phase` is `true`: call finalize (step above). END.
-     3. Announce: `Phase <previous_phase> complete -> advancing to Phase <current_phase>: "<title from phases.json>"`.
-     4. Loop back to step 1 (next round in new phase).
-   - `NEEDS_CHANGES` →
-     **Step A — Automatic promote check** (treat as PHASE_COMPLETE if ALL hold):
-     1. `safety_flags` is empty
-     2. `severity_counts.high == 0`
-     3. Every item in `carry_forward` contains only minor-signal words: "style", "nit", "minor", "optional", "cosmetic", "formatting"
+   - **All verification PASS (or no verification subtask)** → proceed to step 7.
 
-     If all three hold → treat as PHASE_COMPLETE: call `advance-phase` (or `finalize` if last phase).
+7. **Supervisor phase-complete judgment.**
 
-     **Step B — Supervisor judgment override** (when Step A does not apply):
-     The supervisor may override the reviewer's NEEDS_CHANGES decision and proceed as PHASE_COMPLETE when a defensible rationale exists: the phase objective is fully met, the flagged items are not blockers for forward progress (e.g., dead code, doc nits, environment-specific test failures unrelated to logic), and tests pass.
+   Declare phase complete when BOTH hold:
+   - All verification subtasks PASS (step 6 above).
+   - `phase_complete_signal: true` in the round plan, OR all `acceptance_criteria` from the round plan are satisfied per test results.
 
-     Before proceeding with a judgment override:
-     1. APPEND to `shared/knowledge.md` under heading `## Supervisor override — Round N NEEDS_CHANGES → PHASE_COMPLETE (<date>)` a prose rationale covering: (a) why the phase objective is met, (b) each reviewer flag with its severity, (c) why each flag is not a blocker, (d) supporting evidence (test counts, clean state, etc.).
-     2. Then call `advance-phase` (or `finalize` if last phase).
+   If a hard round cap is needed: after 8 consecutive rounds in a phase without declaring completion, escalate to the user.
 
-     **Step C — User escalation** (when supervisor cannot make a defensible decision):
-     Escalate to the user — present continue / revise plan / abort choices — when EITHER:
-     - `consecutive_needs_changes >= 3` (the loop is not converging and needs human direction), OR
-     - The supervisor cannot construct a defensible rationale (e.g., `safety_flags` non-empty with plausible real risks, high-severity issues that may indicate a design problem, or reviewer flags whose validity the supervisor cannot assess).
+   - **Phase NOT complete** → loop back to step 1 (next round).
+   - **Phase complete** → proceed to step 8.
 
-     Otherwise (Steps A and B both inapplicable, Step C not triggered) → loop back to step 1 (next round).
+8. **Phase commit.**
+
+   ```bash
+   git add -- . ":(exclude).agent-loop"
+   git commit -m "phase <current_phase>: <phase title from phases.json>"
+   ```
+
+   Show the commit hash to the user.
+
+9. **Phase review.**
+
+   `Bash: "${CLAUDE_PLUGIN_ROOT}/bin/agent-loop" phase-review --run <run_id> --phase <current_phase>`
+   → JSON `{decision, phase, review_path, severity_counts, carry_forward, consecutive_needs_changes}`.
+
+10. **Branch on phase-review decision:**
+
+    - **`APPROVE`** →
+      `Bash: "${CLAUDE_PLUGIN_ROOT}/bin/agent-loop" advance-phase --run <run_id>`
+      → JSON `{previous_phase, current_phase, is_last_phase}`.
+      - If `is_last_phase: true`: call `finalize`. END.
+      - Else: announce phase advance and loop back to step 1 for the new phase.
+
+    - **`NEEDS_CHANGES`** →
+      **Auto-promote check** (treat as APPROVE if ALL hold):
+      1. `severity_counts.high == 0`
+      2. Every item in `carry_forward` contains only minor-signal words: "style", "nit", "minor", "optional", "cosmetic", "formatting"
+
+      If all hold → treat as APPROVE (step above).
+
+      **Supervisor judgment override**: may treat as APPROVE when: phase objective is met, flagged items are not blockers, tests pass. Before overriding, append rationale to `shared/knowledge.md` under `## Supervisor override — Phase <N> NEEDS_CHANGES → APPROVE (<date>)`.
+
+      **User escalation** when either:
+      - `consecutive_needs_changes >= 3`, OR
+      - Supervisor cannot construct a defensible rationale.
+
+      Otherwise: dispatch fix round(s). After implementation + verification pass:
+      ```bash
+      git add -- . ":(exclude).agent-loop"
+      git commit -m "phase <current_phase>: fix <one-line summary>"
+      ```
+      Re-run `phase-review`. Repeat from step 9.
 
 ## On continue (`/ClaudeXCodex:agent-loop` or `/ClaudeXCodex:agent-loop continue`)
 
@@ -353,13 +366,17 @@ For each round N (starting at 1):
 2. Interpret `action`:
    - `plan_round` → start a fresh round at step 1 of the round loop
    - `dispatch` → re-announce the round (step 3), run `mark-dispatched` (step 4), then dispatch the worker (step 5)
-   - `advance_to_review` → worker result exists but review has not run; check the current round's `rounds/NN/progress.md` for any `[done] <id> verification: fail` line — if found, treat as verification FAIL and dispatch a fix worker instead of calling review-round. Otherwise → call `review-round` directly.
-   - `write_review` → same as `advance_to_review`: check the current round's `rounds/NN/progress.md` for any `[done] <id> verification: fail` line — if found, treat as verification FAIL and dispatch a fix worker instead of calling review-round. Otherwise → run review-round (also re-composes memo if missing).
-   - `write_memo` → review-round was interrupted before memo append. Re-run review-round; it will re-invoke Codex and re-append the memo idempotently.
-   - `skip_review` → verification passed; call `review-round` directly (same as `advance_to_review`). Successful verification always triggers review.
-   - `branch_decision` → review and memo are done; go straight to step 7 (decision branch)
+   - `advance_to_review` → worker result exists but phase judgment has not run; check the current round's `rounds/NN/progress.md` for any `[done] <id> verification: fail` line — if found, treat as verification FAIL and dispatch a fix worker instead. Otherwise → proceed to supervisor phase-complete judgment (step 7).
+   - `write_review` → same as `advance_to_review`: check verification, then supervisor judgment.
+   - `write_memo` → phase-review was interrupted before memo append. Re-run `phase-review`; it will re-invoke Codex and re-append the memo idempotently.
+   - `phase_review_pending` → a phase commit was made but `phase-review` has not run yet.
+     Check that `git log --oneline -1` shows a phase commit. Then:
+     `Bash: "${CLAUDE_PLUGIN_ROOT}/bin/agent-loop" phase-review --run <run_id> --phase <current_phase>`
+     Branch on decision (step 10 of round loop).
+   - `skip_review` → verification passed; proceed to supervisor phase-complete judgment (step 7).
+   - `branch_decision` → phase-review is done; go straight to step 10 (decision branch).
    - `advance_phase` → phase transition pending. Call `"${CLAUDE_PLUGIN_ROOT}/bin/agent-loop" advance-phase --run <run_id>`; if `is_last_phase` true, finalize; else loop back to round-loop step 1.
-   - `finalize` → call finalize if the last completed round was approved
+   - `finalize` → call finalize if the last completed phase was approved
    - `user_confirm` → tell the user the options and wait
 
 ## Forbidden actions
