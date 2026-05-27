@@ -31,7 +31,10 @@ to execution.
    - Read the file.
    - If it already has `authorized: CLAUDE_X_CODEX_PLAN` in the frontmatter, tell
      the user "This plan is already authorized. Hand it off to agent-loop?" and wait.
-   - Otherwise, show a brief summary and ask what they'd like to refine.
+   - Otherwise, copy the file to `.agent-loop-plan-draft.md` (if it isn't already there),
+     then tell the user "Draft loaded from `<path>`. Open `.agent-loop-plan-draft.md`
+     in your editor and tell me what to change." Ask one focused question about the most
+     uncertain part.
 
 2. If a plain goal text was given:
    - Draft an initial plan in this format:
@@ -56,23 +59,40 @@ to execution.
      - <anything you're uncertain about>
      ```
 
-   - Present the draft to the user.
-   - Ask: "What would you like to change or clarify?"
+   - **Write the draft to a file** (do NOT print the full plan in chat):
+
+     ```bash
+     cat > .agent-loop-plan-draft.md << 'EOF'
+     <draft plan content -- no authorized frontmatter yet>
+     EOF
+     ```
+
+   - Tell the user: "Draft saved to `.agent-loop-plan-draft.md`. Open it in your editor and tell me what to change."
+   - Ask one focused question about the most uncertain part of the plan.
+   - **Do not print the plan body in chat** -- the file is the source of truth from this point on.
 
 ## Conversation rules
 
 - **Never pressure the user to decide.** If they want to explore an idea, explore it.
 - **Never use AskUserQuestion with forced choices** for plan content -- free text is fine.
 - Ask one open question at a time. Don't list five follow-ups.
+- **All plan revisions go to the file, not the chat.** When the user requests a change,
+  update `.agent-loop-plan-draft.md` with the Edit tool, then confirm in one sentence what changed.
+  Never reprint the full plan in chat.
 - When the user seems to be converging ("looks good", "let's go", "this is fine"),
-  summarize the final plan and ask: "Ready to authorize and start execution?"
+  ask: "Ready to authorize and start execution?"
 - Keep refining until the user says yes.
 - **Always include a Non-goals section** when drafting or revising a plan. Bounding scope
   prevents Codex from over-reaching during execution. Even a one-item list is enough.
 
 ## On user confirmation
 
-1. Compose the final plan markdown:
+1. Run the self-review checklist (see **Plan quality rules** below) against the current
+   `.agent-loop-plan-draft.md`. Fix any unchecked items before proceeding.
+
+2. Expand the draft into the final plan format, adding required sections that may be
+   missing (Tech Stack, Interface Contracts, Example Scenarios, per-phase Testing).
+   Compose the full plan markdown:
 
    ```markdown
    ---
@@ -149,16 +169,17 @@ to execution.
    more accurately than mixed-language plans, and technical identifiers (file paths,
    function names) are already in English.
 
-2. Write the plan to a temp file (use the Bash tool):
+3. Write the authorized plan to `.agent-loop-plan.md` (use the Write tool, which replaces
+   `.agent-loop-plan-draft.md` as the execution artifact):
 
-   ```bash
-   # Write to the target repo root (or current dir if not in a repo)
-   cat > .agent-loop-plan.md << 'EOF'
-   <plan content>
-   EOF
+   ```
+   Write tool → .agent-loop-plan.md
+   Content: the full plan markdown from step 2, with authorized: CLAUDE_X_CODEX_PLAN in the frontmatter
    ```
 
-3. Run `init-run` with `--plan-file`:
+   Tell the user: "Plan authorized and saved to `.agent-loop-plan.md`."
+
+4. Run `init-run` with `--plan-file`:
 
    ```bash
    "${CLAUDE_PLUGIN_ROOT}/bin/agent-loop" init-run \
@@ -169,7 +190,7 @@ to execution.
 
    -> JSON `{run_id, run_dir}`. Remember `run_id`.
 
-4. Run `plan-init` (phases generation only -- plan.md already exists):
+5. Run `plan-init` (phases generation only -- plan.md already exists):
 
    ```bash
    "${CLAUDE_PLUGIN_ROOT}/bin/agent-loop" plan-init --run <run_id>
@@ -177,9 +198,9 @@ to execution.
 
    Expected output: `"plan_source": "pre-existing"` in the JSON.
 
-5. Tell the user: "Plan confirmed. Phases generated. Starting execution..."
+6. Tell the user: "Plan confirmed. Phases generated. Starting execution..."
 
-6. After plan-init succeeds, proceed directly into the agent-loop round loop (you are already the supervisor for this run). Follow the **Round loop** section of the `skills/agent-loop/SKILL.md` skill -- starting at step 1 (plan-round) -- using the `run_id` obtained in step 3.
+7. After plan-init succeeds, proceed directly into the agent-loop round loop (you are already the supervisor for this run). Follow the **Round loop** section of the `skills/agent-loop/SKILL.md` skill -- starting at step 1 (plan-round) -- using the `run_id` obtained in step 4.
 
 ## Plan quality rules
 
@@ -197,7 +218,7 @@ If you are tempted to write one of these, ask the user a clarifying question ins
 
 ### Self-review checklist
 
-Before writing the plan to disk (step 2), confirm each item:
+Before writing the authorized plan to disk (step 3 of **On user confirmation**), confirm each item:
 
 - [ ] Every phase has a concrete, checkable acceptance criterion (not just "implement X"),
       or uses the one-liner form (which uses "objective achieved" as its implicit criterion).
