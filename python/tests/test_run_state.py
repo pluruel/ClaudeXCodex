@@ -78,3 +78,50 @@ def test_runstate_heartbeat(tmp_path: Path) -> None:
     rs = RunState.new(run_id="r1", goal_path="goal.md", plan_path="plan.md")
     rs.touch_heartbeat("t1")
     assert rs.last_heartbeat == "t1"
+
+
+def test_phase_reviews_default_empty():
+    rs = RunState.new(run_id="r", goal_path="g", plan_path="p")
+    assert rs.phase_reviews == []
+
+
+def test_add_phase_review_appends():
+    rs = RunState.new(run_id="r", goal_path="g", plan_path="p")
+    rs.add_phase_review(phase_n=1, decision="APPROVE", sha="abc123", review_path="phases/phase-01-review.md")
+    assert len(rs.phase_reviews) == 1
+    assert rs.phase_reviews[0] == {
+        "phase_n": 1, "decision": "APPROVE", "sha": "abc123",
+        "review_path": "phases/phase-01-review.md",
+    }
+
+
+def test_consecutive_phase_needs_changes_counts_tail():
+    rs = RunState.new(run_id="r", goal_path="g", plan_path="p")
+    rs.add_phase_review(phase_n=1, decision="NEEDS_CHANGES", sha="a", review_path="r1")
+    rs.add_phase_review(phase_n=1, decision="NEEDS_CHANGES", sha="b", review_path="r2")
+    assert rs.consecutive_phase_needs_changes(1) == 2
+
+
+def test_consecutive_phase_needs_changes_resets_on_approve():
+    rs = RunState.new(run_id="r", goal_path="g", plan_path="p")
+    rs.add_phase_review(phase_n=1, decision="NEEDS_CHANGES", sha="a", review_path="r1")
+    rs.add_phase_review(phase_n=1, decision="APPROVE", sha="b", review_path="r2")
+    rs.add_phase_review(phase_n=1, decision="NEEDS_CHANGES", sha="c", review_path="r3")
+    assert rs.consecutive_phase_needs_changes(1) == 1
+
+
+def test_phase_reviews_round_trip(tmp_path):
+    path = tmp_path / "state.json"
+    rs = RunState.new(run_id="r", goal_path="g", plan_path="p")
+    rs.add_phase_review(phase_n=2, decision="NEEDS_CHANGES", sha="xyz", review_path="phases/phase-02-review.md")
+    rs.save(path)
+    rs2 = RunState.load(path)
+    assert rs2.phase_reviews == [{"phase_n": 2, "decision": "NEEDS_CHANGES", "sha": "xyz", "review_path": "phases/phase-02-review.md"}]
+
+
+def test_phase_reviews_load_backward_compat(tmp_path):
+    """Old state.json without phase_reviews field loads without error."""
+    path = tmp_path / "state.json"
+    path.write_text('{"run_id":"r","goal_path":"g","plan_path":"p","rounds":[]}', encoding="utf-8")
+    rs = RunState.load(path)
+    assert rs.phase_reviews == []

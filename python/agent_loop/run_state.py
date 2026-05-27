@@ -63,6 +63,7 @@ class RunState:
     rounds: list[RoundEntry] = field(default_factory=list)
     safety_flags: list[str] = field(default_factory=list)
     last_heartbeat: Optional[str] = None
+    phase_reviews: list[dict] = field(default_factory=list)
 
     @classmethod
     def new(cls, *, run_id: str, goal_path: str, plan_path: str) -> "RunState":
@@ -79,6 +80,7 @@ class RunState:
         raw.setdefault("current_phase", 1)
         raw.setdefault("total_phases", 1)
         raw.setdefault("phase_advance_pending", False)
+        raw.setdefault("phase_reviews", [])
         return cls(rounds=rounds, **raw)
 
     def save(self, path: Path) -> None:
@@ -113,3 +115,23 @@ class RunState:
         """Increment current_phase (capped at total_phases) and clear pending flag."""
         self.current_phase = min(self.current_phase + 1, self.total_phases)
         self.phase_advance_pending = False
+
+    def add_phase_review(self, *, phase_n: int, decision: str, sha: str, review_path: str) -> None:
+        self.phase_reviews.append({
+            "phase_n": phase_n,
+            "decision": decision,
+            "sha": sha,
+            "review_path": review_path,
+        })
+
+    def consecutive_phase_needs_changes(self, phase_n: int) -> int:
+        """Count consecutive NEEDS_CHANGES phase reviews for phase_n at the tail."""
+        count = 0
+        for r in reversed(self.phase_reviews):
+            if r["phase_n"] != phase_n:
+                continue
+            if r["decision"] == "NEEDS_CHANGES":
+                count += 1
+            else:
+                break
+        return count
