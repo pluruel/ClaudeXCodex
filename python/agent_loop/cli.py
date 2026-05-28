@@ -1931,15 +1931,19 @@ def _validate_round_plan_quality(
         # Strip trailing punctuation and :NN line suffixes
         tokens_raw = bullet_text.split()
         candidate_paths: list[str] = []
+        # Wrapper/punctuation chars that surround a path token in prose or
+        # markdown bullets (backticks, quotes, parens, brackets, trailing
+        # punctuation). Stripped from both ends so a path written as
+        # `pkg/mod.py:func`, is recognized.
+        _wrap = "`'\"()[]{}.,;:"
         for token in tokens_raw:
-            # Strip trailing punctuation (but not colons here — handled below)
-            token = _re.sub(r"[.,;)\]]+$", "", token)
+            token = token.strip(_wrap)
             # Extract the path part before any colon suffix (e.g. cli.py:354 or cli.py:_func)
             # Split on ':' and take the first component as the candidate path.
             colon_idx = token.find(":")
             path_part = token[:colon_idx] if colon_idx != -1 else token
-            # Strip any remaining trailing punctuation from the path part
-            path_part = path_part.rstrip(".,;:)]")
+            # Strip any remaining wrapper/punctuation from the path part
+            path_part = path_part.strip(_wrap)
             # Check it has a / and a file extension
             if "/" not in path_part:
                 continue

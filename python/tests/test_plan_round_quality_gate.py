@@ -327,6 +327,30 @@ def test_missing_runnable_acceptance_criteria_triggers_retry(tmp_repo: Path) -> 
     assert out["quality_failed"] is False, f"Expected quality_failed=False, got {out.get('quality_failed')}"
 
 
+def test_backtick_wrapped_path_no_retry(tmp_repo: Path) -> None:
+    """A backtick-wrapped path token (as Codex commonly emits) passes without retry."""
+    _touch_file(tmp_repo, "python/agent_loop/cli.py")
+
+    run_id = _setup_run_with_phase_doc(tmp_repo, ["python/agent_loop/cli.py"])
+
+    # Bullet wraps the path in markdown backticks and trails it with a comma —
+    # the exact shape that previously failed the path-token check.
+    good_response = _make_round_plan_json(
+        bullets=["In `python/agent_loop/cli.py:_validate_round_plan_quality`, strip wrappers"],
+        criteria=["pytest python/tests/test_plan_round_quality_gate.py -v passes"],
+    )
+
+    env = _make_stub_sequence(tmp_repo, [good_response])
+    r = _run(["plan-round", "--run", run_id], cwd=tmp_repo, env_overrides=env)
+    assert r.returncode == 0, r.stderr
+
+    count = _call_count(tmp_repo)
+    assert count == 1, f"Expected 1 Codex call (backtick path should pass), got {count}"
+
+    out = json.loads(r.stdout)
+    assert out["quality_failed"] is False, f"Expected quality_failed=False, got {out.get('quality_failed')}"
+
+
 def test_plan_round_prompt_mentions_target_files(tmp_repo: Path) -> None:
     """The round-plan prompt passed to Codex must mention ## Target Files and execution_plan_bullets."""
     _touch_file(tmp_repo, "python/agent_loop/cli.py")
