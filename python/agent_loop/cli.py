@@ -691,6 +691,199 @@ def _assemble_phase_doc(spec: dict) -> str:
     )
 
 
+def _parse_plan_phases(plan_text: str) -> "list[dict] | None":
+    """Parse the ## Phases section of a plan.md into a list of phase spec dicts.
+
+    Each dict has keys: phase_n, title, objective, target_files,
+    acceptance_criteria, testing, out_of_scope, notes.
+
+    Returns None when there is no ## Phases section or zero phases are parsed.
+    """
+    import re
+
+    # Extract the ## Phases section (ends at next ## heading or end of document)
+    phases_match = re.search(
+        r"^## Phases\s*\n(.*?)(?=\n## |\Z)",
+        plan_text,
+        re.MULTILINE | re.DOTALL,
+    )
+    if not phases_match:
+        return None
+
+    section = phases_match.group(1)
+
+    # Split into per-phase blocks on lines matching: N. **Title** -- objective
+    # Separators: --, —, –, or :
+    phase_header_re = re.compile(
+        r"^(\d+)\.\s+\*\*([^*]+)\*\*\s*(?:--|—|–|:)\s*(.*?)\s*$",
+        re.MULTILINE,
+    )
+
+    # Also match one-liner or no-separator form: N. **Title**
+    phase_header_nosep_re = re.compile(
+        r"^(\d+)\.\s+\*\*([^*]+)\*\*\s*$",
+        re.MULTILINE,
+    )
+
+    # Find all phase header positions in section
+    headers: list[tuple[int, int, str, str]] = []  # (start, number, title, objective)
+    for m in re.finditer(
+        r"^(\d+)\.\s+\*\*([^*]+)\*\*(?:\s*(?:--|—|–|:)\s*(.*?))?\s*$",
+        section,
+        re.MULTILINE,
+    ):
+        num = int(m.group(1))
+        title = m.group(2).strip()
+        objective = (m.group(3) or "").strip()
+        headers.append((m.start(), num, title, objective))
+
+    if not headers:
+        return None
+
+    def _split_top_level_bullets(body: str) -> "list[tuple[str, str]]":
+        """Split body into (key, block) pairs by top-level sub-bullets.
+
+        A top-level sub-bullet is a line whose bullet character is at the
+        leftmost indented position — i.e., the first bullet indent level seen.
+        Returns list of (header_text, full_block_text) tuples.
+        """
+        lines = body.split("\n")
+        if not lines:
+            return []
+        # Determine the outermost indent level from first bullet line
+        outer_indent: int | None = None
+        for line in lines:
+            stripped = line.lstrip()
+            if stripped and stripped[0] in "-*":
+                outer_indent = len(line) - len(stripped)
+                break
+        if outer_indent is None:
+            return []
+
+        outer_bullet_re = re.compile(r"^" + " " * outer_indent + r"[-*]\s+(.*)")
+        blocks: list[tuple[str, str]] = []
+        current_key = ""
+        current_lines: list[str] = []
+        for line in lines:
+            m = outer_bullet_re.match(line)
+            if m:
+                if current_key:
+                    blocks.append((current_key, "\n".join(current_lines)))
+                current_key = m.group(1)
+                current_lines = [line]
+            else:
+                if current_key:
+                    current_lines.append(line)
+        if current_key:
+            blocks.append((current_key, "\n".join(current_lines)))
+        return blocks
+
+    specs: list[dict] = []
+    for idx, (start, num, title, objective) in enumerate(headers):
+        # Body is text from after this header line to start of next header (or end)
+        line_end = section.index("\n", start) if "\n" in section[start:] else len(section)
+        body_start = line_end + 1
+        body_end = headers[idx + 1][0] if idx + 1 < len(headers) else len(section)
+        body = section[body_start:body_end]
+
+        # Split body into top-level sub-bullet blocks
+        bullet_blocks = _split_top_level_bullets(body)
+        blocks_by_key: dict[str, str] = {}
+        for key, block in bullet_blocks:
+            key_lower = key.lower().rstrip(":")
+            blocks_by_key[key_lower] = block
+
+        def _find_block(prefix: str) -> "str | None":
+            for k, v in blocks_by_key.items():
+                if k.lower().startswith(prefix.lower()):
+                    return v
+            return None
+
+        # target_files
+        target_files: list[str] = []
+        tf_block = _find_block("target file")
+        if tf_block:
+            # First line has "Target files: ..." rest
+            first_line = tf_block.split("\n")[0]
+            colon_pos = first_line.find(":")
+            if colon_pos >= 0:
+                tf_text = first_line[colon_pos + 1:].strip()
+                bt_tokens = re.findall(r"`([^`]+)`", tf_text)
+                if bt_tokens:
+                    target_files = [t.strip() for t in bt_tokens if t.strip()]
+                else:
+                    target_files = [s.strip() for s in tf_text.split(",") if s.strip()]
+
+        # acceptance_criteria
+        acceptance_criteria: list[str] = []
+        ac_block = _find_block("acceptance criteri")
+        if ac_block:
+            for item in re.findall(r"\n\s+[-*]\s+(?:\[[ xX]\]\s*)?(.*)", ac_block):
+                item = item.strip()
+                if item:
+                    acceptance_criteria.append(item)
+
+        # testing
+        testing = {"command": "", "expected": ""}
+        test_block = _find_block("testing")
+        if test_block:
+            # Look for "How to verify:" line
+            verify_match = re.search(r"(?i)how to verify:\s*(.*)", test_block)
+            if verify_match:
+                verify_text = verify_match.group(1).strip()
+                cmd_bt = re.findall(r"`([^`]+)`", verify_text)
+                if cmd_bt:
+                    testing["command"] = cmd_bt[0].strip()
+                    # expected: text after separator on the same line
+                    after_cmd = re.sub(r"^`[^`]+`\s*", "", verify_text)
+                    sep_m = re.match(r"(?:--|—|–|:)\s*(.*)", after_cmd)
+                    if sep_m:
+                        testing["expected"] = sep_m.group(1).strip()
+            else:
+                # Inline: look for backtick in test_block
+                cmd_bt = re.findall(r"`([^`]+)`", test_block)
+                if cmd_bt:
+                    testing["command"] = cmd_bt[0].strip()
+
+        # out_of_scope
+        out_of_scope: list[str] = []
+        oos_block = _find_block("out of scope")
+        if oos_block:
+            for item in re.findall(r"\n\s+[-*]\s+(?:\[[ xX]\]\s*)?(.*)", oos_block):
+                item = item.strip()
+                if item:
+                    out_of_scope.append(item)
+            if not out_of_scope:
+                first_line = oos_block.split("\n")[0]
+                colon_pos = first_line.find(":")
+                if colon_pos >= 0:
+                    remainder = first_line[colon_pos + 1:].strip()
+                    if remainder:
+                        out_of_scope = [s.strip() for s in remainder.split(",") if s.strip()]
+
+        # notes
+        notes = ""
+        notes_block = _find_block("note")
+        if notes_block:
+            first_line = notes_block.split("\n")[0]
+            colon_pos = first_line.find(":")
+            if colon_pos >= 0:
+                notes = first_line[colon_pos + 1:].strip()
+
+        specs.append({
+            "phase_n": num,
+            "title": title,
+            "objective": objective,
+            "target_files": target_files,
+            "acceptance_criteria": acceptance_criteria,
+            "testing": testing,
+            "out_of_scope": out_of_scope,
+            "notes": notes,
+        })
+
+    return specs if specs else None
+
+
 def _parse_phases_response(raw: str) -> list[dict]:
     """Parse Codex phase-generation output into normalized phase dicts.
 
@@ -2377,14 +2570,22 @@ def _cmd_phase_commit(args) -> int:
         except (_json.JSONDecodeError, OSError):
             pass
 
-    # Stage changes (exclude .agent-loop)
+    # Stage changes, then unstage the .agent-loop artifact dir.
+    # Naming an ignored path directly to `git add` (e.g. via :(exclude).agent-loop)
+    # makes git exit non-zero with an "ignored files" advisory. Staging `.` skips
+    # ignored paths silently; the follow-up reset drops .agent-loop when a user has
+    # not gitignored it.
     stage_r = _sp.run(
-        ["git", "add", "--", ".", ":(exclude).agent-loop"],
+        ["git", "add", "--", "."],
         cwd=repo, capture_output=True, text=True,
     )
     if stage_r.returncode != 0:
         print(stage_r.stderr, file=sys.stderr)
         return 1
+    _sp.run(
+        ["git", "reset", "-q", "--", ".agent-loop"],
+        cwd=repo, capture_output=True, text=True,
+    )
 
     # Check if anything is staged
     diff_r = _sp.run(
