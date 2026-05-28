@@ -691,6 +691,153 @@ def _assemble_phase_doc(spec: dict) -> str:
     )
 
 
+def _repair_target_files(
+    specs: "list[dict]",
+    repo: "_Path",
+    scout_signal: dict,
+    call_codex,
+) -> "tuple[list[dict], list[str]]":
+    """Repair missing/invalid target_files paths in phase specs using one Codex call.
+
+    Collects paths that don't exist in the repo (or have leading / or ..) and
+    asks Codex to map them to real paths.  Returns updated specs and a log of
+    repairs/drops.  Makes at most ONE Codex call.  On CodexCallError, drops
+    invalid paths silently.
+    """
+    import json as _json_r
+    import re as _re_r
+    from agent_loop.codex_client import CodexCallError as _CodexCallError
+
+    def _is_valid(p: str, repo: "_Path") -> bool:
+        if not isinstance(p, str) or not p.strip():
+            return False
+        if p.startswith("/") or p.startswith("\\"):
+            return False
+        if ".." in p.split("/") or ".." in p.split("\\"):
+            return False
+        return (repo / p).exists()
+
+    # Collect missing paths per spec index
+    missing: list[str] = []
+    for spec in specs:
+        for p in (spec.get("target_files") or []):
+            if not _is_valid(p, repo):
+                if p not in missing:
+                    missing.append(p)
+
+    if not missing:
+        return specs, []
+
+    # Build repair prompt
+    _file_tree_str = "\n".join(scout_signal.get("file_tree", [])[:80]) or "(none)"
+    repair_prompt = (
+        "Some target_files paths in a phased plan do not exist in the repository.\n"
+        "For each missing path, find the best matching real repo-relative POSIX path "
+        "that currently exists, or return empty string if no good match exists.\n\n"
+        "Missing paths:\n"
+        + "\n".join(f"- {p}" for p in missing)
+        + "\n\nRepo file tree (partial):\n"
+        + _file_tree_str
+        + "\n\nRespond with ONLY a JSON object, no prose, no fences:\n"
+        '{"repairs": {"<missing/path.py>": "<real/path.py or empty string>"}}'
+    )
+
+    repairs: dict[str, str] = {}
+    try:
+        repair_res = call_codex(repair_prompt)
+        raw = repair_res.final_text.strip()
+        # Strip ``` fences
+        raw = _re_r.sub(r"^```(?:json)?\s*", "", raw)
+        raw = _re_r.sub(r"\s*```$", "", raw).strip()
+        try:
+            parsed = _json_r.loads(raw)
+            if isinstance(parsed, dict) and isinstance(parsed.get("repairs"), dict):
+                repairs = {str(k): str(v) for k, v in parsed["repairs"].items()}
+        except _json_r.JSONDecodeError:
+            pass
+    except _CodexCallError:
+        pass  # Drop invalid paths without repair
+
+    repair_log: list[str] = []
+    updated_specs: list[dict] = []
+    for spec in specs:
+        spec = dict(spec)
+        n = spec.get("phase_n", "?")
+        tf = spec.get("target_files") or []
+        new_tf: list[str] = []
+        for p in tf:
+            if _is_valid(p, repo):
+                new_tf.append(p)
+            else:
+                repaired = repairs.get(p, "")
+                if repaired and _is_valid(repaired, repo):
+                    new_tf.append(repaired)
+                    repair_log.append(f"phase {n}: {p} -> {repaired}")
+                else:
+                    repair_log.append(f"phase {n}: dropped nonexistent {p}")
+        spec["target_files"] = new_tf
+        updated_specs.append(spec)
+
+    return updated_specs, repair_log
+
+
+def _assemble_phases_from_specs(
+    specs: "list[dict]",
+    run_dir: "_Path",
+    repo: "_Path",
+) -> "list[dict]":
+    """Normalize, filter, sort, write phase docs, and return phases_index.
+
+    Used by both the parsed-plan path and the Codex-JSON path so no
+    assembly logic is duplicated.  Specs are modified in-place (phase_n
+    re-numbered).  Returns the phases_index list (dicts with phase_n, title,
+    objective, doc_path).
+    """
+    # Filter out invalid target_files in each spec
+    normalized: list[dict] = []
+    for spec in specs:
+        if not isinstance(spec, dict):
+            continue
+        spec = dict(spec)
+        tf = spec.get("target_files", [])
+        if isinstance(tf, list):
+            spec["target_files"] = [
+                p for p in tf
+                if isinstance(p, str) and p.strip()
+                and not p.startswith("/")
+                and ".." not in p.split("/")
+                and (repo / p).exists()
+            ]
+        normalized.append(spec)
+
+    # Sort and cap
+    normalized.sort(key=lambda s: s.get("phase_n", 999))
+    normalized = normalized[:5]
+
+    # Re-number
+    for new_n, spec in enumerate(normalized, start=1):
+        spec["phase_n"] = new_n
+
+    phases_dir = run_dir / "phases"
+    phases_dir.mkdir(exist_ok=True)
+    phases_index: list[dict] = []
+    for spec in normalized:
+        ph_n = spec["phase_n"]
+        title = str(spec.get("title", f"Phase {ph_n}")).strip()
+        objective = str(spec.get("objective", "")).strip()
+        doc_content = _assemble_phase_doc(spec)
+        doc_path = phases_dir / f"phase-{ph_n:02d}.md"
+        doc_path.write_text(doc_content, encoding="utf-8")
+        phases_index.append({
+            "phase_n": ph_n,
+            "title": title,
+            "objective": objective,
+            "doc_path": f"phases/phase-{ph_n:02d}.md",
+        })
+
+    return phases_index
+
+
 def _parse_plan_phases(plan_text: str) -> "list[dict] | None":
     """Parse the ## Phases section of a plan.md into a list of phase spec dicts.
 
@@ -1173,6 +1320,56 @@ def _cmd_plan_init(args) -> int:
     except Exception:
         pass  # Fall back to empty signal; do not abort plan-init
 
+    phase_validation_errors: list[str] = []
+    phase_source = "codex"
+
+    # --- Parsed-plan fast path ---
+    # When plan_source == "pre-existing" and the plan.md contains a ## Phases
+    # section parseable by _parse_plan_phases, skip the Codex phases_prompt
+    # call and assemble phase docs directly from the parsed specs.
+    if plan_source == "pre-existing":
+        _parsed_phases = _parse_plan_phases(plan_text)
+        if _parsed_phases:
+            # Repair any missing target_files paths with a single Codex call.
+            _parsed_phases, _repair_log = _repair_target_files(
+                _parsed_phases, repo, scout_signal, call_codex
+            )
+            phase_validation_errors = _repair_log
+            phases_index = _assemble_phases_from_specs(_parsed_phases, run_dir, repo)
+            if not phases_index:
+                _fb = _single_phase_fallback()
+                phases_dir = run_dir / "phases"
+                phases_dir.mkdir(exist_ok=True)
+                phases_index = []
+                for _fbph in _fb:
+                    _doc_path = phases_dir / f"phase-{_fbph['phase_n']:02d}.md"
+                    _doc_path.write_text(_fbph["content"], encoding="utf-8")
+                    phases_index.append({
+                        "phase_n": _fbph["phase_n"],
+                        "title": _fbph["title"],
+                        "objective": _fbph["objective"],
+                        "doc_path": f"phases/phase-{_fbph['phase_n']:02d}.md",
+                    })
+            phase_source = "parsed"
+            (run_dir / "phases.json").write_text(
+                _json.dumps(phases_index, indent=2) + "\n", encoding="utf-8",
+            )
+            rs = RunState.load(run_dir / "state.json")
+            rs.total_phases = len(phases_index)
+            rs.current_phase = 1
+            rs.save(run_dir / "state.json")
+            _emit({
+                "plan_path": str(plan_path),
+                "plan_source": plan_source,
+                "phase_source": phase_source,
+                "phases": phases_index,
+                "phase_validation_errors": phase_validation_errors,
+                "summary": f"{len(phases_index)} phase(s) drafted",
+            })
+            return 0
+        # else: fall through to Codex phases_prompt path below
+
+    # --- Codex phases_prompt path (existing behavior, unchanged) ---
     # Build the strict JSON phases prompt.
     _scout_file_tree_str = "\n".join(scout_signal["file_tree"][:80]) or "(none)"
     _scout_grep_hits_str = _json.dumps(scout_signal["grep_hits"][:40], indent=2) if scout_signal["grep_hits"] else "(none)"
@@ -1235,8 +1432,6 @@ def _cmd_plan_init(args) -> int:
     except _json.JSONDecodeError:
         _parsed_strict = None
 
-    phase_validation_errors: list[str] = []
-
     if _parsed_strict is not None and isinstance(_parsed_strict.get("phases"), list):
         # Validate the parsed specs.
         _specs = _parsed_strict["phases"]
@@ -1274,51 +1469,18 @@ def _cmd_plan_init(args) -> int:
             except CodexCallError:
                 pass  # Keep original _parsed_strict, errors persist
 
-        # Assemble phase docs from JSON specs.
-        # Filter out invalid target_files paths to avoid doc linking nonexistent files.
-        _normalized_specs: list[dict] = []
-        for _spec in _parsed_strict.get("phases", []):
-            if not isinstance(_spec, dict):
-                continue
-            _spec = dict(_spec)
-            _tf = _spec.get("target_files", [])
-            if isinstance(_tf, list):
-                _spec["target_files"] = [
-                    p for p in _tf
-                    if isinstance(p, str) and p.strip()
-                    and not p.startswith("/")
-                    and ".." not in p.split("/")
-                    and (repo / p).exists()
-                ]
-            _normalized_specs.append(_spec)
-
-        # Sort and re-number
-        _normalized_specs.sort(key=lambda s: s.get("phase_n", 999))
-        _normalized_specs = _normalized_specs[:5]
-        for _new_n, _spec in enumerate(_normalized_specs, start=1):
-            _spec["phase_n"] = _new_n
-
-        phases_dir = run_dir / "phases"
-        phases_dir.mkdir(exist_ok=True)
-        phases_index = []
-        for _spec in _normalized_specs:
-            _ph_n = _spec["phase_n"]
-            _title = str(_spec.get("title", f"Phase {_ph_n}")).strip()
-            _objective = str(_spec.get("objective", "")).strip()
-            _doc_content = _assemble_phase_doc(_spec)
-            _doc_path = phases_dir / f"phase-{_ph_n:02d}.md"
-            _doc_path.write_text(_doc_content, encoding="utf-8")
-            phases_index.append({
-                "phase_n": _ph_n,
-                "title": _title,
-                "objective": _objective,
-                "doc_path": f"phases/phase-{_ph_n:02d}.md",
-            })
+        # Assemble phase docs from JSON specs using shared helper.
+        phases_index = _assemble_phases_from_specs(
+            [dict(s) for s in _parsed_strict.get("phases", []) if isinstance(s, dict)],
+            run_dir,
+            repo,
+        )
 
         if not phases_index:
             # All specs were invalid; fall back to single phase
             _fb = _single_phase_fallback()
             phases_index = []
+            phases_dir = run_dir / "phases"
             phases_dir.mkdir(exist_ok=True)
             for _fbph in _fb:
                 _doc_path = phases_dir / f"phase-{_fbph['phase_n']:02d}.md"
@@ -1359,6 +1521,7 @@ def _cmd_plan_init(args) -> int:
     _emit({
         "plan_path": str(plan_path),
         "plan_source": plan_source,
+        "phase_source": phase_source,
         "phases": phases_index,
         "phase_validation_errors": phase_validation_errors,
         "summary": f"{len(phases_index)} phase(s) drafted",

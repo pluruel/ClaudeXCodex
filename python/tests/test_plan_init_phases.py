@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import subprocess
 import sys
 from pathlib import Path
@@ -220,3 +221,197 @@ def test_plan_init_normalizes_non_contiguous_phase_ns(tmp_repo: Path) -> None:
     state = json.loads((run_dir / "state.json").read_text(encoding="utf-8"))
     assert state["current_phase"] == 1
     assert state["total_phases"] == 3
+
+
+# ---------------------------------------------------------------------------
+# Helpers for parsed-plan tests
+# ---------------------------------------------------------------------------
+
+def _make_counting_stub(tmp_repo: Path, responses: list[str], counter_name: str = ".stub_counter_parsed") -> dict:
+    """Returns env dict for a stub that counts calls and returns responses[i] on i-th call."""
+    counter_file = tmp_repo / counter_name
+    stub_path = tmp_repo / f"codex_stub_{counter_name.lstrip('.')}.py"
+    items = ", ".join(repr(r) for r in responses)
+    stub_path.write_text(
+        f"import json, sys\n"
+        f"from pathlib import Path\n"
+        f"counter_file = Path({str(counter_file)!r})\n"
+        f"try:\n"
+        f"    count = int(counter_file.read_text())\n"
+        f"except Exception:\n"
+        f"    count = 0\n"
+        f"counter_file.write_text(str(count + 1))\n"
+        f"responses = [{items}]\n"
+        f"resp = responses[min(count, len(responses) - 1)]\n"
+        f"print(json.dumps({{'type': 'assistant_message', 'content': resp}}))\n",
+        encoding="utf-8",
+    )
+    py = sys.executable.replace("\\", "/")
+    return {"AGENT_LOOP_CODEX_BIN": f'"{py}" "{stub_path.as_posix()}"'}
+
+
+def _plan_with_phases(phases_block: str) -> str:
+    """Wrap a phases_block in a proper plan.md with ## Phases section."""
+    return (
+        "# Plan: Test plan\n\n"
+        "## Goal\nDo something.\n\n"
+        "## Tasks\n1. [ ] do it\n\n"
+        f"## Phases\n{phases_block}"
+    )
+
+
+def _make_phase_block(n: int, title: str, objective: str, target_files: list[str]) -> str:
+    """Render a single phase block in the plan template format."""
+    tf_str = ", ".join(f"`{f}`" for f in target_files)
+    return (
+        f"{n}. **{title}** -- {objective}\n"
+        f"  - Target files: {tf_str}\n"
+        f"  - Acceptance criteria:\n"
+        f"    - pytest python/tests -q passes\n"
+        f"  - Testing: How to verify: `pytest python/tests -q` -- all tests pass\n"
+        f"  - Out of scope: unrelated changes\n"
+        f"  - Notes: keep it simple\n"
+    )
+
+
+def _create_real_files(tmp_repo: Path) -> list[str]:
+    """Create real files in tmp_repo and return their repo-relative paths."""
+    src = tmp_repo / "src"
+    src.mkdir(exist_ok=True)
+    (src / "alpha.py").write_text("# alpha\n")
+    (src / "beta.py").write_text("# beta\n")
+    subprocess.run(["git", "add", "src/"], cwd=tmp_repo, check=True)
+    subprocess.run(["git", "commit", "-q", "-m", "add src files"], cwd=tmp_repo, check=True)
+    return ["src/alpha.py", "src/beta.py"]
+
+
+# ---------------------------------------------------------------------------
+# Tests: parsed-plan path
+# ---------------------------------------------------------------------------
+
+def test_plan_init_parsed_when_plan_has_phases(tmp_repo: Path) -> None:
+    """Pre-existing plan.md with ## Phases and valid target_files -> phase_source == 'parsed', zero Codex calls."""
+    real_files = _create_real_files(tmp_repo)
+    run_id = _init_run(tmp_repo, goal="test parsed path", slug="parsed")
+    run_dir = tmp_repo / ".agent-loop" / "runs" / run_id
+
+    phases_block = (
+        _make_phase_block(1, "Alpha Phase", "Set up alpha.", [real_files[0]])
+        + _make_phase_block(2, "Beta Phase", "Set up beta.", [real_files[1]])
+    )
+    plan_text = _plan_with_phases(phases_block)
+    (run_dir / "plan.md").write_text(plan_text, encoding="utf-8")
+
+    # Stub: should NOT be called at all (all target_files exist)
+    counter_name = ".stub_counter_parsed_zero"
+    env = _make_counting_stub(tmp_repo, ["unused"], counter_name=counter_name)
+    r = _run(["plan-init", "--run", run_id], cwd=tmp_repo, env_overrides=env)
+    assert r.returncode == 0, r.stderr
+
+    out = json.loads(r.stdout)
+    assert out.get("phase_source") == "parsed", \
+        f"Expected phase_source='parsed', got {out.get('phase_source')!r}"
+    assert out.get("plan_source") == "pre-existing"
+    assert len(out["phases"]) == 2
+    titles = [p["title"] for p in out["phases"]]
+    assert "Alpha Phase" in titles
+    assert "Beta Phase" in titles
+
+    # Verify ZERO Codex calls were made
+    counter_file = tmp_repo / counter_name
+    call_count = int(counter_file.read_text()) if counter_file.exists() else 0
+    assert call_count == 0, f"Expected 0 Codex calls, got {call_count}"
+
+    # Phase docs must exist with all 6 headings
+    for i in range(1, 3):
+        doc = run_dir / "phases" / f"phase-{i:02d}.md"
+        assert doc.exists(), f"phase-{i:02d}.md not found"
+        content = doc.read_text(encoding="utf-8")
+        for heading in ["## Objective", "## Target Files", "## Acceptance Criteria",
+                        "## Testing", "## Out of Scope", "## Notes"]:
+            assert heading in content, f"Missing heading {heading!r} in phase-{i:02d}.md"
+
+
+def test_plan_init_falls_back_to_codex_when_unparseable(tmp_repo: Path) -> None:
+    """Pre-existing plan.md with NO ## Phases section -> phase_source == 'codex', Codex called for phases."""
+    _create_real_files(tmp_repo)
+    run_id = _init_run(tmp_repo, goal="test fallback", slug="fallback")
+    run_dir = tmp_repo / ".agent-loop" / "runs" / run_id
+
+    # Plan without ## Phases section
+    plan_text = "# Plan\n\n## Tasks\n1. [ ] do it\n"
+    (run_dir / "plan.md").write_text(plan_text, encoding="utf-8")
+
+    # Stub returns a valid phase JSON
+    phases_json = json.dumps({
+        "phases": [{
+            "phase_n": 1,
+            "title": "Codex Phase",
+            "objective": "Implement it.",
+            "scope_hint": "src/",
+            "target_files": ["src/alpha.py"],
+            "acceptance_criteria": ["pytest python/tests -q passes"],
+            "testing": {"command": "pytest python/tests -q", "expected": "pass"},
+            "out_of_scope": [],
+            "notes": "",
+        }]
+    })
+    counter_name = ".stub_counter_fallback"
+    env = _make_counting_stub(tmp_repo, [phases_json], counter_name=counter_name)
+
+    r = _run(["plan-init", "--run", run_id], cwd=tmp_repo, env_overrides=env)
+    assert r.returncode == 0, r.stderr
+
+    out = json.loads(r.stdout)
+    assert out.get("phase_source") == "codex", \
+        f"Expected phase_source='codex', got {out.get('phase_source')!r}"
+    assert out.get("plan_source") == "pre-existing"
+    assert len(out["phases"]) >= 1
+
+    # Verify Codex was called at least once (for the phases prompt)
+    counter_file = tmp_repo / counter_name
+    call_count = int(counter_file.read_text()) if counter_file.exists() else 0
+    assert call_count >= 1, f"Expected >=1 Codex call for phases, got {call_count}"
+
+
+def test_plan_init_narrow_repair_when_target_missing(tmp_repo: Path) -> None:
+    """Pre-existing plan.md with one nonexistent target_file -> exactly ONE repair Codex call made."""
+    real_files = _create_real_files(tmp_repo)
+    run_id = _init_run(tmp_repo, goal="test repair", slug="repair")
+    run_dir = tmp_repo / ".agent-loop" / "runs" / run_id
+
+    # Phase with one real file and one nonexistent file
+    nonexistent = "nonexistent/ghost.py"
+    phases_block = _make_phase_block(
+        1, "Repair Phase", "Test repair.",
+        [real_files[0], nonexistent],
+    )
+    plan_text = _plan_with_phases(phases_block)
+    (run_dir / "plan.md").write_text(plan_text, encoding="utf-8")
+
+    # Repair stub returns a JSON with the repair mapping
+    repair_response = json.dumps({"repairs": {nonexistent: real_files[1]}})
+    counter_name = ".stub_counter_repair"
+    env = _make_counting_stub(tmp_repo, [repair_response], counter_name=counter_name)
+
+    r = _run(["plan-init", "--run", run_id], cwd=tmp_repo, env_overrides=env)
+    assert r.returncode == 0, r.stderr
+
+    out = json.loads(r.stdout)
+    assert out.get("phase_source") == "parsed"
+    assert len(out["phases"]) == 1
+
+    # Exactly ONE Codex call for repair
+    counter_file = tmp_repo / counter_name
+    call_count = int(counter_file.read_text()) if counter_file.exists() else 0
+    assert call_count == 1, f"Expected exactly 1 repair Codex call, got {call_count}"
+
+    # The bad path is repaired or dropped; ghost.py must not be in the doc
+    phase_doc = run_dir / "phases" / "phase-01.md"
+    assert phase_doc.exists()
+    content = phase_doc.read_text(encoding="utf-8")
+    assert nonexistent not in content, \
+        "Nonexistent path should not appear in the phase doc after repair"
+    # The real file should be present (either original or repaired)
+    assert real_files[0] in content or real_files[1] in content, \
+        "At least one real file should appear in the phase doc"
