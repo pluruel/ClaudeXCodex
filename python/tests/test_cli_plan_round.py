@@ -501,11 +501,19 @@ def test_plan_round_single_codex_call(tmp_repo: Path) -> None:
     plan = tmp_repo / ".agent-loop" / "runs" / run_id / "plan.md"
     plan.write_text("# Plan\n\n## Tasks\n1. [ ] do A\n", encoding="utf-8")
 
-    # Provide two entries; only the first should be consumed.
+    # A real nested file so the round plan passes the quality gate (concrete
+    # repo-resident path token) and no vagueness retry occurs.
+    (tmp_repo / "pkg").mkdir()
+    (tmp_repo / "pkg" / "mod.py").write_text("x = 1\n", encoding="utf-8")
+
+    # Provide two entries; a quality-passing first envelope means only the first
+    # should be consumed (no retry).
     env = _codex_stub_sequence(tmp_repo, [
         _merged_envelope(
             round_n=1, worker_model="haiku", reason="mechanical",
             reasoning_effort="low", task_description="Implement A",
+            execution_plan_bullets=["Edit pkg/mod.py to implement A"],
+            acceptance_criteria=["pytest pkg/test_mod.py passes"],
         ),
         "SHOULD_NOT_BE_CALLED",
     ])

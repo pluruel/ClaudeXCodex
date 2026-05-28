@@ -26,6 +26,9 @@ def _bootstrap_run(tmp_repo: Path, codex_stub) -> str:
     (tmp_repo / "src.py").write_text("x = 2\n")
     subprocess.run(["git", "add", "src.py"], cwd=tmp_repo, check=True)
     subprocess.run(["git", "commit", "-q", "-m", "phase 1: update x"], cwd=tmp_repo, check=True)
+    phase_sha = subprocess.run(
+        ["git", "rev-parse", "HEAD"], cwd=tmp_repo, capture_output=True, text=True, check=True,
+    ).stdout.strip()
 
     r = _run(["init-run", "--goal", "improve x", "--slug", "test"], cwd=tmp_repo)
     assert r.returncode == 0, r.stderr
@@ -40,6 +43,13 @@ def _bootstrap_run(tmp_repo: Path, codex_stub) -> str:
         encoding="utf-8",
     )
     (run_dir / "shared").mkdir(exist_ok=True)
+
+    # Record the phase-1 commit sha so phase-review's phase-commit gate passes
+    # (the real flow records this via the phase-commit subcommand).
+    state_path = run_dir / "state.json"
+    state = json.loads(state_path.read_text(encoding="utf-8"))
+    state.setdefault("phase_commits", {})["1"] = phase_sha
+    state_path.write_text(json.dumps(state), encoding="utf-8")
     return run_id
 
 
