@@ -83,7 +83,7 @@ def test_scout_emits_json(tmp_repo: Path) -> None:
 
 def test_status_shows_state(tmp_repo: Path) -> None:
     _run(["init-run", "--goal", "g", "--slug", "s"], cwd=tmp_repo)
-    r = _run(["status"], cwd=tmp_repo)
+    r = _run(["status", "--json"], cwd=tmp_repo)
     assert r.returncode == 0, r.stderr
     js = json.loads(r.stdout)
     assert js["state"]["status"] == "in_progress"
@@ -213,3 +213,82 @@ def test_inspect_lines_invalid_spec_reports_clear_error(tmp_repo: Path) -> None:
     assert r.returncode == 1
     assert "Traceback" not in r.stderr
     assert "--lines" in r.stdout
+
+
+# ---------------------------------------------------------------------------
+# progress / status rendering tests
+# ---------------------------------------------------------------------------
+
+def _seed_run_with_phases(tmp_repo: Path) -> tuple[str, Path]:
+    """Create a run with a phases.json and an active round progress file.
+
+    Returns (run_id, run_dir).
+    """
+    r1 = _run(["init-run", "--goal", "build feature X", "--slug", "feature-x"], cwd=tmp_repo)
+    assert r1.returncode == 0, r1.stderr
+    run_id = json.loads(r1.stdout)["run_id"]
+    run_dir = tmp_repo / ".agent-loop" / "runs" / run_id
+
+    # Write a phases.json so the renderer has phase titles to show
+    phases = [
+        {"phase_n": 1, "title": "Foundation", "objective": "Set up base.", "doc_path": "phases/phase-01.md"},
+        {"phase_n": 2, "title": "Integration", "objective": "Wire pieces.", "doc_path": "phases/phase-02.md"},
+    ]
+    (run_dir / "phases").mkdir(exist_ok=True)
+    (run_dir / "phases.json").write_text(json.dumps(phases, indent=2), encoding="utf-8")
+
+    # Seed a round 01 progress file so the renderer has something to show
+    rounds_01 = run_dir / "rounds" / "01"
+    rounds_01.mkdir(parents=True, exist_ok=True)
+    (rounds_01 / "progress.md").write_text(
+        "- [done] implement scaffold\n"
+        "- [doing] write unit tests\n",
+        encoding="utf-8",
+    )
+
+    return run_id, run_dir
+
+
+def test_progress_subcommand_renders_view(tmp_repo: Path) -> None:
+    """``progress --run <id>`` prints a rendered view with phase titles and glyphs."""
+    run_id, _ = _seed_run_with_phases(tmp_repo)
+    r = _run(["progress", "--run", run_id], cwd=tmp_repo)
+    assert r.returncode == 0, r.stderr
+    output = r.stdout
+    # Phase title must appear
+    assert "Foundation" in output
+    # A glyph (active or done marker) must appear
+    assert any(g in output for g in ("▶", "✓", "·", "[>]", "[x]", "[ ]"))
+
+
+def test_status_default_renders_progress_view(tmp_repo: Path) -> None:
+    """``status --run <id>`` now prints the rendered progress view by default."""
+    run_id, _ = _seed_run_with_phases(tmp_repo)
+    r = _run(["status", "--run", run_id], cwd=tmp_repo)
+    assert r.returncode == 0, r.stderr
+    output = r.stdout
+    # Should contain a phase title (not just raw JSON)
+    assert "Foundation" in output
+
+
+def test_status_json_flag_emits_legacy_json(tmp_repo: Path) -> None:
+    """``status --run <id> --json`` still emits the legacy JSON with state + memo_tail keys."""
+    run_id, _ = _seed_run_with_phases(tmp_repo)
+    r = _run(["status", "--run", run_id, "--json"], cwd=tmp_repo)
+    assert r.returncode == 0, r.stderr
+    js = json.loads(r.stdout)
+    assert "state" in js
+    assert "memo_tail" in js
+
+
+def test_progress_ascii_flag_no_box_drawing(tmp_repo: Path) -> None:
+    """``progress --run <id> --ascii`` produces ASCII-only output (no box-drawing chars)."""
+    run_id, _ = _seed_run_with_phases(tmp_repo)
+    r = _run(["progress", "--run", run_id, "--ascii"], cwd=tmp_repo)
+    assert r.returncode == 0, r.stderr
+    output = r.stdout
+    # None of the Unicode box-drawing / fancy glyphs should appear
+    for bad_char in ("▶", "✓", "·", "├─", "└─"):
+        assert bad_char not in output, f"ASCII mode output must not contain {bad_char!r}"
+    # But ASCII equivalents should be present
+    assert any(g in output for g in ("[>]", "[x]", "[ ]", "|-", "+-"))

@@ -26,6 +26,21 @@ The CLI is bundled inside this plugin and exposed through the plugin's `bin/agen
 
 The wrapper resolves `${CLAUDE_PLUGIN_ROOT}` when available and otherwise infers the plugin root from its own location. It then executes `${CLAUDE_PLUGIN_ROOT}/python/agent_loop/__main__.py`, so no `pip install` is required.
 
+### Progress rendering
+
+At each round boundary (after `mark-worker-done`) and at each phase boundary (after `phase-review`), the supervisor may shell out to:
+
+```
+"${CLAUDE_PLUGIN_ROOT}/bin/agent-loop" progress --run <run_id>
+```
+
+This prints a compact, scannable view of run progress (phase tree with glyphs, active round done/doing/planned items) and pastes the output into the live scroll so the user can see status without opening files.
+
+`status` now prints the same rendered view by default:
+- `status --run <run_id>` — rendered progress view (same as `progress`)
+- `status --run <run_id> --json` — legacy machine-readable JSON (`state` + `memo_tail` keys, backward-compatible)
+- `status --run <run_id> --ascii` (or `progress --run <run_id> --ascii`) — ASCII-only glyphs for legacy terminals (no box-drawing characters)
+
 ## Preflight — verify dependencies BEFORE the first real bash call
 
 1. `Bash: "${CLAUDE_PLUGIN_ROOT}/bin/agent-loop" --help`. Expected: usage banner listing subcommands (`init-run`, `plan-init`, ...).

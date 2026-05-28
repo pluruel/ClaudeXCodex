@@ -18,6 +18,15 @@ from pathlib import Path
 if __name__ == "__main__" and __package__ in (None, ""):
     sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
+# Force UTF-8 on stdout/stderr so Unicode glyphs don't crash on Windows
+# legacy code pages. Guarded so it degrades gracefully on older Pythons or
+# streams that don't support reconfigure (e.g. StringIO in tests).
+for _s in (sys.stdout, sys.stderr):
+    try:
+        _s.reconfigure(encoding="utf-8")
+    except (AttributeError, ValueError):
+        pass
+
 from agent_loop.cli import main
 
 
