@@ -720,7 +720,9 @@ def _repair_target_files(
     # Collect missing paths per spec index
     missing: list[str] = []
     for spec in specs:
-        for p in (spec.get("target_files") or []):
+        raw_tf = spec.get("target_files")
+        _tf_list = raw_tf if isinstance(raw_tf, list) else []
+        for p in _tf_list:
             if not _is_valid(p, repo):
                 if p not in missing:
                     missing.append(p)
@@ -763,7 +765,8 @@ def _repair_target_files(
     for spec in specs:
         spec = dict(spec)
         n = spec.get("phase_n", "?")
-        tf = spec.get("target_files") or []
+        raw_tf2 = spec.get("target_files")
+        tf = raw_tf2 if isinstance(raw_tf2, list) else []
         new_tf: list[str] = []
         for p in tf:
             if _is_valid(p, repo):

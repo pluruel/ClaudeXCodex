@@ -374,6 +374,50 @@ def test_plan_init_falls_back_to_codex_when_unparseable(tmp_repo: Path) -> None:
     assert call_count >= 1, f"Expected >=1 Codex call for phases, got {call_count}"
 
 
+def test_plan_init_parsed_phase_without_target_files(tmp_repo: Path) -> None:
+    """Parsed phase with NO Target files sub-bullet -> phase_source='parsed', ZERO Codex calls."""
+    _create_real_files(tmp_repo)
+    run_id = _init_run(tmp_repo, goal="test no target files", slug="no-tf")
+    run_dir = tmp_repo / ".agent-loop" / "runs" / run_id
+
+    # Phase block with no "Target files:" sub-bullet
+    phase_block_no_tf = (
+        "1. **Lone Phase** -- Objective with no target files.\n"
+        "  - Acceptance criteria:\n"
+        "    - pytest python/tests -q passes\n"
+        "  - Testing: How to verify: `pytest python/tests -q` -- all tests pass\n"
+        "  - Out of scope: unrelated changes\n"
+        "  - Notes: keep it simple\n"
+    )
+    plan_text = _plan_with_phases(phase_block_no_tf)
+    (run_dir / "plan.md").write_text(plan_text, encoding="utf-8")
+
+    # Stub counter: must NOT be called
+    counter_name = ".stub_counter_no_tf"
+    env = _make_counting_stub(tmp_repo, ["unused"], counter_name=counter_name)
+
+    r = _run(["plan-init", "--run", run_id], cwd=tmp_repo, env_overrides=env)
+    assert r.returncode == 0, r.stderr
+
+    out = json.loads(r.stdout)
+    assert out.get("phase_source") == "parsed", \
+        f"Expected phase_source='parsed', got {out.get('phase_source')!r}"
+    assert len(out["phases"]) == 1, f"Expected 1 phase, got {len(out['phases'])}"
+    assert out["phases"][0]["title"] == "Lone Phase"
+
+    # ZERO Codex calls (no repair needed for missing target_files)
+    counter_file = tmp_repo / counter_name
+    call_count = int(counter_file.read_text()) if counter_file.exists() else 0
+    assert call_count == 0, f"Expected 0 Codex calls, got {call_count}"
+
+    # Phase doc must exist and show "(none)" for target files
+    phase_doc = run_dir / "phases" / "phase-01.md"
+    assert phase_doc.exists(), "phase-01.md not found"
+    content = phase_doc.read_text(encoding="utf-8")
+    assert "## Target Files" in content, "Missing '## Target Files' heading"
+    assert "(none)" in content, "Expected '(none)' for empty target files list"
+
+
 def test_plan_init_narrow_repair_when_target_missing(tmp_repo: Path) -> None:
     """Pre-existing plan.md with one nonexistent target_file -> exactly ONE repair Codex call made."""
     real_files = _create_real_files(tmp_repo)
