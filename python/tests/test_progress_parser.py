@@ -156,3 +156,14 @@ def test_render_completed_run_marks_all_done() -> None:
     assert "▶" not in out
     # All three done markers should appear (one per phase)
     assert out.count("✓") == 3
+
+
+def test_render_completed_run_shows_completion_not_empty_round() -> None:
+    # A finished run whose round progress log is empty/stale must NOT render the
+    # misleading "done: 0 (no progress recorded)" block — show a completion line.
+    state = {**_SAMPLE_STATE, "status": "completed", "current_phase": 3}
+    snap = ProgressSnapshot()  # no parseable round progress
+    out = render_progress(state, _SAMPLE_PHASES, snap)
+    assert "no progress recorded" not in out
+    assert "Round" not in out  # the per-round block is suppressed when complete
+    assert "All 3 phase(s) complete." in out

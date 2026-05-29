@@ -84,6 +84,15 @@ def render_progress(
             lines.append(f"  {connector} {glyph} {title}")
         lines.append("")
 
+    # Completed run: the per-round progress log is stale/irrelevant once the
+    # run is done (and compact mode may have reaped it), so show a clean
+    # completion summary instead of a misleading "done: 0 (no progress recorded)".
+    # Keep this line glyph-free so the phase tree remains the only source of
+    # done markers.
+    if status == "completed":
+        lines.append(f"All {total_phases} phase(s) complete.")
+        return "\n".join(lines)
+
     # Active round progress
     lines.append(f"Round {current_round} progress:")
     lines.append(f"  done: {progress.done_count}")
